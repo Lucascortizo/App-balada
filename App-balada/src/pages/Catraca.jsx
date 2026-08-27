@@ -1,12 +1,14 @@
 import { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Scanner } from '@yudiel/react-qr-scanner';
-import { collection, query, where, getDocs, updateDoc, doc } from 'firebase/firestore';
+import { doc, getDoc, updateDoc, collection, query, where, getDocs, addDoc } from 'firebase/firestore';
 import { db } from '../services/firebase';
+import { ArrowLeft, CheckCircle2, XCircle, AlertTriangle, ScanLine } from 'lucide-react';
 
 export default function Catraca() {
-  const [status, setStatus] = useState('aguardando'); // aguardando, validando, sucesso, erro
+  const [status, setStatus] = useState('aguardando'); 
   const [mensagem, setMensagem] = useState('');
+  const [modo, setModo] = useState('entrada'); // 'entrada' ou 'saida'
 
   const location = useLocation();
   const navigate = useNavigate();
@@ -14,9 +16,18 @@ export default function Catraca() {
 
   if (!eventoId) {
     return (
-      <div className="min-h-screen bg-gray-900 flex flex-col items-center justify-center text-white gap-4">
-        <p className="text-red-400 font-bold">Nenhum evento selecionado para a portaria.</p>
-        <button onClick={() => navigate('/admin')} className="bg-purple-600 px-4 py-2 rounded-lg font-bold">
+      <div className="min-h-screen bg-[#FAFAFA] flex flex-col items-center justify-center p-6 text-center">
+        <div className="w-24 h-24 bg-red-50 text-red-500 rounded-full flex items-center justify-center mb-6">
+          <AlertTriangle className="w-12 h-12" />
+        </div>
+        <h2 className="text-2xl font-black text-zinc-900 mb-2 tracking-tight">Acesso Negado</h2>
+        <p className="text-zinc-500 font-medium mb-8 max-w-xs mx-auto">
+          Inicie a catraca através do painel de Administração para vincular a um evento ativo.
+        </p>
+        <button 
+          onClick={() => navigate('/admin')} 
+          className="bg-zinc-900 text-white px-8 py-4 rounded-2xl font-black shadow-lg active:scale-95 transition-transform"
+        >
           Voltar ao Admin
         </button>
       </div>
@@ -32,108 +43,177 @@ export default function Catraca() {
 
   const aoLerCodigo = async (codigos) => {
     if (status !== 'aguardando') return;
-    const uidCliente = codigos[0]?.rawValue;
-    if (!uidCliente) return;
+    
+    const qrBruto = codigos[0]?.rawValue;
+    if (!qrBruto || !qrBruto.includes('|')) {
+      setMensagem('QR Code Inválido.');
+      setStatus('erro');
+      return resetar();
+    }
 
     setStatus('validando');
+    const [tipoItem, idDocumento, idClienteSaida] = qrBruto.split('|');
 
     try {
-      // 1. Procura ingresso de pista válido e não utilizado para ESTE evento
-      const qIngresso = query(
-        collection(db, 'ingressos_vendidos'),
-        where('donoId', '==', uidCliente),
-        where('eventoId', '==', eventoId),
-        where('status', '==', 'valido')
-      );
-      const snapIngresso = await getDocs(qIngresso);
+      if (modo === 'saida') {
+        if (tipoItem !== 'saida') {
+          setMensagem('Use o Passe Verde de Saída.');
+          setStatus('erro'); return resetar();
+        }
 
-      if (!snapIngresso.empty) {
-        const ingressoDoc = snapIngresso.docs[0];
-        await updateDoc(doc(db, 'ingressos_vendidos', ingressoDoc.id), {
-          status: 'usado',
-          checkinEm: new Date().toISOString(),
+        if (idDocumento !== eventoId) {
+          setMensagem('Passe de outra festa!');
+          setStatus('erro'); return resetar();
+        }
+
+        const qSaidaRegistrada = await getDocs(query(collection(db, "saidas_realizadas"), where("clienteId", "==", idClienteSaida), where("eventoId", "==", eventoId)));
+        if (!qSaidaRegistrada.empty) {
+          setMensagem('PASSE JÁ UTILIZADO!');
+          setStatus('erro'); return resetar(4000);
+        }
+
+        const qPedidos = await getDocs(query(collection(db, "pedidos"), where("clienteId", "==", idClienteSaida), where("eventoId", "==", eventoId)));
+        const qEspacos = await getDocs(query(collection(db, "espacos"), where("donoId", "==", idClienteSaida), where("eventoId", "==", eventoId)));
+        const qPagamentos = await getDocs(query(collection(db, "pagamentos_comanda"), where("clienteId", "==", idClienteSaida), where("eventoId", "==", eventoId)));
+
+        const totalBar = qPedidos.docs.reduce((acc, doc) => acc + (Number(doc.data().total) || 0), 0);
+        const totalVIP = qEspacos.docs.reduce((acc, doc) => acc + (Number(doc.data().consumacao) || 0), 0);
+        const aPagar = Math.max(0, totalBar - totalVIP);
+
+        if (aPagar > 0 && qPagamentos.empty) {
+          setMensagem(`CALOTE! Devendo: R$ ${aPagar.toFixed(2)}`);
+          setStatus('erro'); return resetar(5000);
+        }
+
+        await addDoc(collection(db, "saidas_realizadas"), {
+          clienteId: idClienteSaida, eventoId: eventoId, dataSaida: new Date().toISOString()
         });
-        setMensagem('Pista — acesso liberado');
-        setStatus('sucesso');
-        resetar();
-        return;
+
+        setMensagem('SAÍDA LIBERADA');
+        setStatus('sucesso'); return resetar();
       }
 
-      // 2. Procura espaço VIP (camarote/bistrô/lounge) reservado por essa pessoa neste evento
-      const qEspaco = query(
-        collection(db, 'espacos'),
-        where('donoId', '==', uidCliente),
-        where('eventoId', '==', eventoId),
-        where('status', '==', 'reservado')
-      );
-      const snapEspaco = await getDocs(qEspaco);
+      if (modo === 'entrada') {
+        if (tipoItem === 'saida') {
+          setMensagem('Passe de saída negado. Use ingresso.');
+          setStatus('erro'); return resetar();
+        }
 
-      if (!snapEspaco.empty) {
-        const espaco = snapEspaco.docs[0].data();
-        setMensagem(`${espaco.sigla} — acesso liberado`);
-        setStatus('sucesso');
-        resetar();
-        return;
+        if (tipoItem === 'ingresso') {
+          const ingressoRef = doc(db, 'ingressos_vendidos', idDocumento);
+          const snap = await getDoc(ingressoRef);
+          
+          if (!snap.exists()) throw new Error("Não encontrado");
+          
+          const dados = snap.data();
+          if (dados.eventoId !== eventoId) { setMensagem('Ingresso de OUTRA festa!'); setStatus('erro'); return resetar(); }
+          if (dados.status === 'usado') { setMensagem('INGRESSO JÁ UTILIZADO!'); setStatus('erro'); return resetar(); }
+
+          await updateDoc(ingressoRef, { status: 'usado', checkinEm: new Date().toISOString() });
+          setMensagem('ACESSO LIBERADO');
+          setStatus('sucesso'); return resetar();
+        }
+
+        if (tipoItem === 'espaco') {
+          const espacoRef = doc(db, 'espacos', idDocumento);
+          const snap = await getDoc(espacoRef);
+          
+          if (!snap.exists()) throw new Error("Não encontrado");
+          
+          const dados = snap.data();
+          if (dados.eventoId !== eventoId) { setMensagem('Reserva de OUTRA festa!'); setStatus('erro'); return resetar(); }
+          if (dados.checkinFeito) { setMensagem(`${dados.tipo} JÁ ENTROU!`); setStatus('erro'); return resetar(); }
+
+          await updateDoc(espacoRef, { checkinFeito: true, checkinEm: new Date().toISOString() });
+          setMensagem(`VIP LIBERADO`);
+          setStatus('sucesso'); return resetar();
+        }
       }
-
-      // 3. Nada encontrado: ingresso inválido, já usado, ou de outro evento
-      setMensagem('Ingresso não encontrado ou já utilizado para este evento');
-      setStatus('erro');
-      resetar(2500);
     } catch (error) {
-      console.error(error);
-      setMensagem('Erro ao validar. Tente novamente.');
-      setStatus('erro');
-      resetar(2500);
+      setMensagem('Ingresso não localizado.');
+      setStatus('erro'); resetar();
     }
   };
 
-  const corFundo =
-    status === 'sucesso' ? 'bg-green-600' : status === 'erro' ? 'bg-red-600' : 'bg-gray-900';
+  const statusColors = {
+    aguardando: 'bg-[#FAFAFA]',
+    validando: 'bg-amber-500',
+    sucesso: 'bg-emerald-500',
+    erro: 'bg-rose-500'
+  };
 
   return (
-    <div className={`min-h-screen flex flex-col items-center justify-center p-6 font-sans transition-colors duration-500 ${corFundo}`}>
-      <div className="w-full max-w-md bg-gray-800 rounded-3xl overflow-hidden shadow-2xl border border-gray-700">
-        <header className="p-5 bg-gray-900 text-center border-b border-gray-700">
-          <h1 className="text-2xl font-bold text-white">Controle de Portaria</h1>
-          <p className="text-gray-400">Aponte para o ingresso do cliente</p>
+    <div className={`min-h-screen flex flex-col items-center justify-center p-0 sm:p-6 font-sans transition-colors duration-500 ${statusColors[status]}`}>
+      
+      <div className="w-full h-screen sm:h-auto max-w-md bg-white sm:rounded-[2.5rem] overflow-hidden shadow-[0_20px_60px_rgba(0,0,0,0.08)] border border-zinc-100 flex flex-col">
+        
+        <header className="p-6 bg-white flex flex-col gap-6 z-10 shadow-sm relative">
+          <div className="flex justify-between items-center">
+            <button 
+              onClick={() => navigate('/admin')} 
+              className="text-zinc-500 flex items-center gap-2 font-black text-[10px] uppercase tracking-widest bg-zinc-100 px-4 py-2.5 rounded-full hover:bg-zinc-200 transition-colors active:scale-95"
+            >
+              <ArrowLeft className="w-3 h-3" /> Admin
+            </button>
+            <h1 className="text-xl font-black text-zinc-900 tracking-tight">Catraca</h1>
+          </div>
+          
+          <div className="flex bg-zinc-100 p-1.5 rounded-2xl w-full">
+            <button 
+              onClick={() => { setModo('entrada'); setStatus('aguardando'); }} 
+              className={`flex-1 py-4 text-xs font-black tracking-widest uppercase rounded-xl transition-all ${modo === 'entrada' ? 'bg-white text-indigo-600 shadow-sm' : 'text-zinc-400 hover:text-zinc-600'}`}
+            >
+              Entrada
+            </button>
+            <button 
+              onClick={() => { setModo('saida'); setStatus('aguardando'); }} 
+              className={`flex-1 py-4 text-xs font-black tracking-widest uppercase rounded-xl transition-all ${modo === 'saida' ? 'bg-white text-indigo-600 shadow-sm' : 'text-zinc-400 hover:text-zinc-600'}`}
+            >
+              Saída
+            </button>
+          </div>
         </header>
 
-        <div className="relative bg-black aspect-square">
+        <div className="relative bg-zinc-900 aspect-square w-full">
           {status === 'aguardando' ? (
             <Scanner
               onScan={aoLerCodigo}
-              onError={(error) => console.log(error)}
               formats={['qr_code']}
               components={{ audio: false, finder: false }}
               styles={{ container: { width: '100%', height: '100%' } }}
             />
           ) : (
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/40">
-              <span className="text-7xl mb-4">
-                {status === 'validando' ? '⏳' : status === 'sucesso' ? '✅' : '⛔'}
-              </span>
-              <h2 className="text-2xl font-bold text-white tracking-widest uppercase text-center px-4">
-                {status === 'validando' ? 'Validando...' : status === 'sucesso' ? 'Liberado' : 'Negado'}
-              </h2>
+            <div className={`absolute inset-0 flex flex-col items-center justify-center z-10 text-white ${status === 'validando' ? 'bg-amber-500' : status === 'sucesso' ? 'bg-emerald-500' : 'bg-rose-500'}`}>
+              {status === 'validando' ? <ScanLine className="w-24 h-24 animate-pulse drop-shadow-md" /> : 
+               status === 'sucesso' ? <CheckCircle2 className="w-24 h-24 drop-shadow-md" /> : 
+               <XCircle className="w-24 h-24 drop-shadow-md" />}
             </div>
           )}
+          
           {status === 'aguardando' && (
-            <div className="absolute inset-0 border-[40px] border-black/50 flex items-center justify-center">
-              <div className="w-full h-full border-2 border-purple-500 rounded-lg"></div>
+            <div className="absolute inset-0 border-[40px] border-black/40 flex items-center justify-center pointer-events-none">
+              <div className={`w-full h-full border-[4px] rounded-3xl ${modo === 'entrada' ? 'border-indigo-500/80' : 'border-green-500/80'}`}></div>
             </div>
           )}
         </div>
 
-        <div className="p-6 text-center">
+        <div className="flex-1 p-8 text-center flex flex-col items-center justify-center bg-white min-h-[160px]">
+          <p className="text-[10px] uppercase tracking-widest mb-3 font-black text-zinc-400">
+            {modo === 'entrada' ? 'Validador de Acesso' : 'Verificador de Comanda'}
+          </p>
+          
           {status === 'aguardando' ? (
-            <p className="text-gray-400 animate-pulse">Aguardando leitura...</p>
+            <p className="text-zinc-900 font-bold text-base flex flex-col items-center gap-2">
+              <ScanLine className="w-6 h-6 text-zinc-300" />
+              Posicione o QR Code<br/>no centro da tela
+            </p>
           ) : (
-            <p className={status === 'sucesso' ? 'text-green-400 font-bold' : 'text-red-300 font-bold'}>
+            <p className={`text-4xl font-black tracking-tight leading-none ${status === 'sucesso' ? 'text-emerald-600' : status === 'validando' ? 'text-amber-600' : 'text-rose-600'}`}>
               {mensagem}
             </p>
           )}
         </div>
+
       </div>
     </div>
   );

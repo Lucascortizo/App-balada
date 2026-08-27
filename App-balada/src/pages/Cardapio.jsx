@@ -3,7 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { collection, onSnapshot, query, where, doc, writeBatch, increment } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import { AuthContext } from '../contexts/AuthContext';
-import QRCode from 'react-qr-code';
+import { ArrowLeft, GlassWater, Crown, ShoppingBag } from 'lucide-react';
 
 export default function Cardapio() {
   const [cart, setCart] = useState([]);
@@ -11,51 +11,53 @@ export default function Cardapio() {
   const [menuItems, setMenuItems] = useState([]);
   const [saldoVIP, setSaldoVIP] = useState(0);
 
-  const { user, logout } = useContext(AuthContext);
+  const { user } = useContext(AuthContext);
   const navigate = useNavigate();
   const location = useLocation();
-  
-  // A MÁGICA: Qual evento o cliente está?
   const eventoId = location.state?.eventoId;
 
   useEffect(() => {
-    if (!user) { navigate('/login'); return; }
-    if (!eventoId) { navigate('/home'); return; }
+    if (!user || !eventoId) {
+      navigate('/home');
+      return;
+    }
 
     const unsubCardapio = onSnapshot(collection(db, "cardapio"), (snapshot) => {
       setMenuItems(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     });
 
-    let totalConsumacaoComprada = 0;
+    let totalConsumoComprado = 0;
     let totalGastoNoBar = 0;
 
-    const atualizarSaldo = () => {
-      const saldo = totalConsumacaoComprada - totalGastoNoBar;
+    const calcularSaldoDisponivel = () => {
+      const saldo = totalConsumoComprado - totalGastoNoBar;
       setSaldoVIP(saldo > 0 ? saldo : 0);
     };
 
-    // ISOLAMENTO: Só busca Camarotes que ele tem NESTE EVENTO
-    const qEspacos = query(collection(db, "espacos"), where("donoId", "==", user.uid), where("eventoId", "==", eventoId));
-    const unsubEspacos = onSnapshot(qEspacos, (snapshot) => {
-      totalConsumacaoComprada = snapshot.docs.reduce((acc, doc) => acc + (Number(doc.data().consumacao) || 0), 0);
-      atualizarSaldo();
+    const unsubEspacos = onSnapshot(query(collection(db, "espacos"), where("donoId", "==", user.uid), where("eventoId", "==", eventoId)), (snapshot) => {
+      totalConsumoComprado = snapshot.docs.reduce((acc, doc) => acc + (Number(doc.data().consumacao) || 0), 0);
+      calcularSaldoDisponivel();
     });
 
-    // ISOLAMENTO: Só busca Pedidos que ele fez NESTE EVENTO
-    const qPedidos = query(collection(db, "pedidos"), where("clienteId", "==", user.uid), where("eventoId", "==", eventoId));
-    const unsubPedidos = onSnapshot(qPedidos, (snapshot) => {
+    const unsubPedidos = onSnapshot(query(collection(db, "pedidos"), where("clienteId", "==", user.uid), where("eventoId", "==", eventoId)), (snapshot) => {
       totalGastoNoBar = snapshot.docs.reduce((acc, doc) => acc + (Number(doc.data().total) || 0), 0);
-      atualizarSaldo();
+      calcularSaldoDisponivel();
     });
 
-    return () => { unsubCardapio(); unsubEspacos(); unsubPedidos(); };
+    return () => { 
+      unsubCardapio(); 
+      unsubEspacos(); 
+      unsubPedidos(); 
+    };
   }, [user, navigate, eventoId]);
 
   const addToCart = (item) => setCart([...cart, item]);
+  
   const totalCart = cart.reduce((acc, item) => acc + item.preco, 0);
 
   const finalizarPedido = async () => {
     if (cart.length === 0 || !user) return;
+    
     setIsSubmitting(true);
     const usouSaldoVIP = saldoVIP >= totalCart;
 
@@ -64,70 +66,109 @@ export default function Cardapio() {
       const novoPedidoRef = doc(collection(db, "pedidos"));
       
       batch.set(novoPedidoRef, {
-        eventoId: eventoId, // CARIMBANDO O EVENTO
+        eventoId: eventoId, 
         clienteId: user.uid,
         clienteNome: user.nome || "Anônimo",
         itens: cart,
         total: totalCart,
         status: "pendente",
-        formaPagamento: usouSaldoVIP ? 'Saldo VIP' : 'A Pagar',
+        formaPagamento: usouSaldoVIP ? 'Saldo VIP' : 'Comanda Saída',
         dataHora: new Date().toISOString()
       });
 
       const contagemItens = {};
-      cart.forEach(item => { contagemItens[item.id] = (contagemItens[item.id] || 0) + 1; });
+      cart.forEach(item => { 
+        contagemItens[item.id] = (contagemItens[item.id] || 0) + 1; 
+      });
 
       for (const [itemId, qtdComprada] of Object.entries(contagemItens)) {
-        batch.update(doc(db, "cardapio", itemId), { estoque: increment(-qtdComprada) });
+        batch.update(doc(db, "cardapio", itemId), { 
+          estoque: increment(-qtdComprada) 
+        });
       }
 
       await batch.commit();
-      alert(usouSaldoVIP ? "Descontado do Saldo VIP! 🥂" : "Adicionado à sua Comanda da festa! 🚀");
+      alert(usouSaldoVIP ? "Pedido descontado do seu VIP com sucesso!" : "Adicionado à sua Comanda digital!");
       setCart([]);
-    } catch (error) { alert("Erro ao processar."); } finally { setIsSubmitting(false); }
+      
+    } catch (error) { 
+      alert("Ocorreu um erro ao enviar seu pedido."); 
+    } finally { 
+      setIsSubmitting(false); 
+    }
   };
 
-  if (!user || !eventoId) return <div className="h-screen bg-gray-900 flex items-center justify-center text-purple-400">Carregando...</div>;
+  if (!user || !eventoId) return null;
 
   return (
-    <div className="max-w-md mx-auto h-screen bg-gray-900 text-white flex flex-col font-sans relative overflow-hidden">
-      <header className="p-5 bg-gray-800 flex justify-between items-center border-b border-gray-700">
-        <button onClick={() => navigate('/home')} className="text-xs text-purple-400 hover:text-white">← Voltar</button>
-        <h1 className="text-xl font-bold text-white">Bar da Festa</h1>
-        <button onClick={() => { logout(); navigate('/'); }} className="text-xs bg-gray-700 px-3 py-1 rounded-full">Sair</button>
+    <div className="min-h-screen bg-[#FAFAFA] text-zinc-900 font-sans relative pb-40">
+      
+      <header className="sticky top-0 z-40 bg-white/80 backdrop-blur-xl border-b border-zinc-200 px-6 py-4 flex items-center justify-between shadow-sm">
+        <button 
+          onClick={() => navigate(-1)} 
+          className="bg-zinc-100 hover:bg-zinc-200 text-zinc-600 p-2.5 rounded-full transition-transform active:scale-95"
+        >
+          <ArrowLeft className="w-5 h-5" />
+        </button>
+        <h1 className="text-xl font-black tracking-tight text-zinc-900">Bar Digital</h1>
+        <div className="w-10"></div>
       </header>
 
-      <main className="flex-1 overflow-y-auto p-5 pb-32">
+      <main className="p-6 max-w-lg mx-auto">
+        
         {saldoVIP > 0 && (
-          <div className="mb-6 bg-gradient-to-r from-blue-900 to-purple-900 p-4 rounded-xl border border-purple-500/50 shadow-lg flex justify-between items-center">
-            <div>
-              <p className="text-xs text-purple-300 font-bold uppercase">Saldo Consumação</p>
-              <p className="text-2xl font-bold">R$ {saldoVIP.toFixed(2)}</p>
+          <div className="mb-8 bg-gradient-to-br from-indigo-600 to-purple-600 p-8 rounded-[2rem] shadow-[0_8px_30px_rgba(79,70,229,0.3)] flex justify-between items-center text-white relative overflow-hidden">
+            <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full blur-2xl -mr-10 -mt-10 pointer-events-none"></div>
+            <div className="relative z-10">
+              <p className="text-[10px] font-black uppercase tracking-widest opacity-80 mb-1">
+                Crédito VIP
+              </p>
+              <p className="text-4xl font-black tracking-tight">
+                R$ {saldoVIP.toFixed(2)}
+              </p>
             </div>
-            <div className="text-4xl">👑</div>
+            <Crown className="w-12 h-12 opacity-90 relative z-10 drop-shadow-md text-indigo-100" />
           </div>
         )}
 
-        <section className="mb-6 flex flex-col items-center p-4 bg-gray-800 rounded-2xl border border-gray-700">
-          <p className="text-xs text-gray-400 mb-2 uppercase tracking-wider">QR Code Mesa / Bar</p>
-          <div className="bg-white p-2 rounded-lg"><QRCode value={user?.uid || ''} size={100} /></div>
-        </section>
-
-        <div className="space-y-3">
+        <div className="space-y-4">
+          <h2 className="text-[11px] text-zinc-400 uppercase tracking-widest font-black mb-4 pl-2">
+            Cardápio Oficial
+          </h2>
+          
           {menuItems.map((item) => {
-            const qtdNoCarrinho = cart.filter(c => c.id === item.id).length;
-            const semEstoque = item.estoque <= 0 || qtdNoCarrinho >= item.estoque;
+            const itensDesteNoCarrinho = cart.filter(c => c.id === item.id).length;
+            const semEstoque = item.estoque <= 0 || itensDesteNoCarrinho >= item.estoque;
+            
             return (
-              <div key={item.id} className={`flex items-center justify-between p-3 rounded-xl border ${semEstoque ? 'bg-gray-900 border-red-900/50 opacity-60' : 'bg-gray-800 border-gray-700'}`}>
-                <div className="flex items-center gap-3">
-                  <div className={`w-10 h-10 bg-gray-900 rounded flex items-center justify-center text-xl ${semEstoque ? 'grayscale' : ''}`}>{item.img}</div>
+              <div 
+                key={item.id} 
+                className={`p-4 rounded-3xl border transition-all duration-300 flex items-center justify-between gap-4 ${
+                  semEstoque ? 'bg-zinc-50 border-zinc-200 opacity-60' : 'bg-white border-zinc-200 shadow-sm hover:border-indigo-200 hover:shadow-md'
+                }`}
+              >
+                <div className="flex items-center gap-4">
+                  <div className={`w-16 h-16 bg-zinc-50 rounded-2xl flex items-center justify-center text-zinc-400 shadow-inner ${semEstoque ? 'grayscale' : ''}`}>
+                    <GlassWater className="w-8 h-8" />
+                  </div>
                   <div>
-                    <h3 className={`font-bold text-sm ${semEstoque ? 'line-through text-gray-500' : ''}`}>{item.nome}</h3>
-                    <p className="text-purple-400 font-bold text-xs">R$ {item.preco.toFixed(2)}</p>
+                    <h3 className={`font-black text-lg leading-tight mb-1 ${semEstoque ? 'line-through text-zinc-400' : 'text-zinc-900'}`}>
+                      {item.nome}
+                    </h3>
+                    <p className="text-indigo-600 font-black text-sm">
+                      R$ {item.preco.toFixed(2)}
+                    </p>
                   </div>
                 </div>
-                <button onClick={() => addToCart(item)} disabled={semEstoque} className={`h-8 px-3 rounded-full font-bold ${semEstoque ? 'bg-red-900/40 text-red-400 text-xs' : 'bg-purple-600 text-white hover:bg-purple-500'}`}>
-                  {semEstoque ? 'Esgotado' : '+'}
+                
+                <button 
+                  onClick={() => addToCart(item)} 
+                  disabled={semEstoque} 
+                  className={`w-12 h-12 rounded-full flex items-center justify-center font-black text-xl transition-transform active:scale-90 ${
+                    semEstoque ? 'bg-zinc-100 text-zinc-400' : 'bg-zinc-900 text-white hover:bg-zinc-800 shadow-md'
+                  }`}
+                >
+                  +
                 </button>
               </div>
             );
@@ -135,17 +176,26 @@ export default function Cardapio() {
         </div>
       </main>
 
+      {/* Checkout Fixo no Rodapé */}
       {cart.length > 0 && (
-        <div className="absolute bottom-5 left-1/2 -translate-x-1/2 w-[90%]">
-          <button onClick={finalizarPedido} disabled={isSubmitting} className="w-full bg-purple-600 p-4 rounded-xl font-bold flex flex-col items-center shadow-lg">
-            <div className="flex w-full justify-between items-center mb-1">
-              <span>{cart.length} itens</span>
-              <span className="text-xl">R$ {totalCart.toFixed(2)}</span>
+        <div className="fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-xl border-t border-zinc-200 p-6 z-50">
+          <div className="max-w-lg mx-auto flex items-center justify-between gap-6">
+            <div className="flex-1">
+              <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest mb-0.5 flex items-center gap-1">
+                <ShoppingBag className="w-3 h-3" /> {cart.length} {cart.length === 1 ? 'item' : 'itens'}
+              </p>
+              <p className="text-3xl font-black text-zinc-900 tracking-tight leading-none">
+                R$ {totalCart.toFixed(2)}
+              </p>
             </div>
-            <p className="text-[10px] text-white/80 uppercase">
-              {saldoVIP >= totalCart ? '✓ Desconta do VIP' : 'Pague na saída (Comanda)'}
-            </p>
-          </button>
+            <button 
+              onClick={finalizarPedido} 
+              disabled={isSubmitting} 
+              className="bg-indigo-600 hover:bg-indigo-700 text-white px-8 py-4 rounded-2xl font-black text-lg shadow-[0_8px_20px_rgba(79,70,229,0.3)] active:scale-95 transition-all disabled:opacity-70 disabled:active:scale-100 flex-1 flex justify-center items-center"
+            >
+              {isSubmitting ? 'Enviando...' : 'Fazer Pedido'}
+            </button>
+          </div>
         </div>
       )}
     </div>

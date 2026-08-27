@@ -1,5 +1,5 @@
 import { useState, useContext } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { AuthContext } from '../contexts/AuthContext';
 
 export default function Login() {
@@ -15,7 +15,6 @@ export default function Login() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  // A MÁGICA: Onde o usuário estava antes de ser barrado?
   const returnTo = location.state?.returnTo || '/home';
   const eventoId = location.state?.eventoId || null;
 
@@ -40,10 +39,7 @@ export default function Login() {
         if (!nome || !cpf) throw new Error('Preencha todos os campos.');
         await register(email, senha, nome, cpf);
       }
-      
-      // O EFEITO BUMERANGUE: Volta para onde ele estava (com o ID da festa)
       navigate(returnTo, { state: { eventoId } }); 
-      
     } catch (error) {
       setErro(error.message === 'Preencha todos os campos.' ? error.message : traduzirErro(error.code));
     } finally {
@@ -52,47 +48,50 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-900 flex flex-col justify-center items-center p-4 font-sans text-white">
-      <div className="w-full max-w-sm bg-gray-800 rounded-2xl p-8 border border-gray-700 shadow-2xl">
+    <div className="min-h-screen bg-gray-50 flex flex-col justify-center items-center p-6 font-sans">
+      <div className="w-full max-w-sm bg-white rounded-3xl p-8 border border-gray-100 shadow-xl relative overflow-hidden">
         
-        <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-purple-400 mb-2">Neon Club</h1>
-          <p className="text-gray-400">
-            {eventoId ? 'Crie sua conta para garantir sua reserva' : (isLogin ? 'Acesse sua conta' : 'Crie sua conta')}
+        {/* Detalhe de design no topo do card */}
+        <div className="absolute top-0 left-0 right-0 h-2 bg-gradient-to-r from-purple-500 to-pink-500"></div>
+
+        <div className="text-center mb-8 mt-2">
+          <h1 className="text-3xl font-black text-purple-600 mb-2 tracking-tighter">NEON.</h1>
+          <p className="text-slate-500 font-medium">
+            {eventoId ? 'Crie sua conta para garantir sua reserva' : (isLogin ? 'Acesse sua conta VIP' : 'Crie sua conta VIP')}
           </p>
         </div>
 
-        {erro && <div className="bg-red-500/10 text-red-400 p-3 rounded-lg text-sm mb-4 border border-red-500/30">{erro}</div>}
+        {erro && <div className="bg-red-50 text-red-600 p-3 rounded-xl text-sm mb-6 border border-red-100 font-medium text-center">{erro}</div>}
 
         <form onSubmit={handleAutenticacao} className="space-y-4">
           {!isLogin && (
             <>
               <div>
-                <label className="block text-sm font-medium text-gray-400 mb-1">Nome Completo</label>
-                <input type="text" value={nome} onChange={(e) => setNome(e.target.value)} className="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 text-white" />
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Nome Completo</label>
+                <input type="text" value={nome} onChange={(e) => setNome(e.target.value)} className="w-full bg-gray-50 border border-gray-200 focus:border-purple-500 focus:ring-2 focus:ring-purple-200 outline-none rounded-xl p-3 text-slate-900 transition" />
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-400 mb-1">CPF</label>
-                <input type="text" value={cpf} onChange={(e) => setCpf(e.target.value)} className="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 text-white" />
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">CPF</label>
+                <input type="text" value={cpf} onChange={(e) => setCpf(e.target.value)} className="w-full bg-gray-50 border border-gray-200 focus:border-purple-500 focus:ring-2 focus:ring-purple-200 outline-none rounded-xl p-3 text-slate-900 transition" />
               </div>
             </>
           )}
           <div>
-            <label className="block text-sm font-medium text-gray-400 mb-1">Email</label>
-            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required className="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 text-white" />
+            <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Email</label>
+            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required className="w-full bg-gray-50 border border-gray-200 focus:border-purple-500 focus:ring-2 focus:ring-purple-200 outline-none rounded-xl p-3 text-slate-900 transition" />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-400 mb-1">Senha</label>
-            <input type="password" value={senha} onChange={(e) => setSenha(e.target.value)} required className="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 text-white" />
+            <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Senha</label>
+            <input type="password" value={senha} onChange={(e) => setSenha(e.target.value)} required className="w-full bg-gray-50 border border-gray-200 focus:border-purple-500 focus:ring-2 focus:ring-purple-200 outline-none rounded-xl p-3 text-slate-900 transition" />
           </div>
 
-          <button type="submit" disabled={loading} className="w-full text-white font-bold py-3 rounded-lg mt-6 bg-purple-600 hover:bg-purple-500 transition">
+          <button type="submit" disabled={loading} className="w-full text-white font-black py-4 rounded-xl mt-6 bg-purple-600 hover:bg-purple-700 shadow-[0_8px_20px_rgba(147,51,234,0.3)] transition active:scale-95 text-lg">
             {loading ? 'Processando...' : (isLogin ? 'Entrar' : 'Continuar')}
           </button>
         </form>
 
-        <div className="mt-6 text-center">
-          <button onClick={() => { setIsLogin(!isLogin); setErro(''); }} className="text-purple-400 text-sm">
+        <div className="mt-8 text-center border-t border-gray-100 pt-6">
+          <button onClick={() => { setIsLogin(!isLogin); setErro(''); }} className="text-slate-500 hover:text-purple-600 font-bold transition">
             {isLogin ? 'Não tem conta? Cadastre-se' : 'Já tem conta? Entre aqui'}
           </button>
         </div>

@@ -8,6 +8,7 @@ import Catraca from './pages/Catraca';
 import Admin from './pages/Admin';
 import Ingressos from './pages/Ingressos';
 import MinhaConta from './pages/MinhaConta'; 
+import MeusDados from './pages/MeusDados';
 
 export default function App() {
   return (
@@ -17,6 +18,7 @@ export default function App() {
           {/* A Vitrine Pública (Página Inicial) */}
           <Route path="/" element={<Home />} />
           <Route path="/home" element={<Home />} />
+          <Route path="/meus-dados" element={<MeusDados />} />
           
           {/* Tela de Login agora com o caminho correto */}
           <Route path="/login" element={<Login />} />
