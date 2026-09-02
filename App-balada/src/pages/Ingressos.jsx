@@ -26,28 +26,76 @@ export default function Ingressos() {
     return () => unsub();
   }, [navigate, eventoId]);
 
+  // ==========================================
+  // COMPRA DE INGRESSO PISTA (SIMULAÇÃO)
+  // ==========================================
   const comprarPista = async () => {
     if (!user) return navigate('/login', { state: { returnTo: '/ingressos', eventoId } });
+    
     setIsSubmitting(true);
+    
     try {
-      await addDoc(collection(db, "ingressos_vendidos"), { eventoId: evento.id, eventoNome: evento.nome, tipo: "Pista", preco: evento.precoPista, donoId: user.uid, donoNome: user.nome || user.email, dataCompra: new Date().toISOString(), status: "valido" });
+      // 1. SIMULAÇÃO DE TEMPO DE RESPOSTA DO CARTÃO/PIX (Remova isso quando tiver a API)
+      await new Promise(resolve => setTimeout(resolve, 1200));
+
+      // 2. AQUI ENTRARÁ SUA FUTURA API DE PAGAMENTO:
+      // const response = await fetch('SUA_API/pagar', { body: evento.precoPista ... });
+      // window.location.href = response.checkoutUrl;
+
+      // 3. GERAÇÃO DO INGRESSO (Hoje acontece direto, no futuro será feito pelo Webhook)
+      await addDoc(collection(db, "ingressos_vendidos"), { 
+        eventoId: evento.id, 
+        eventoNome: evento.nome, 
+        tipo: "Pista", 
+        preco: evento.precoPista, 
+        donoId: user.uid, 
+        donoNome: user.nome || user.email, 
+        dataCompra: new Date().toISOString(), 
+        status: "valido" 
+      });
+
       navigate('/minha-conta');
-    } catch (e) { alert("Erro ao processar."); } finally { setIsSubmitting(false); }
+    } catch (e) { 
+      alert("Erro ao processar a compra."); 
+    } finally { 
+      setIsSubmitting(false); 
+    }
   };
 
+  // ==========================================
+  // RESERVA DE CAMAROTE/MESA (SIMULAÇÃO)
+  // ==========================================
   const reservarEspaco = async (espaco) => {
     if (!user) return navigate('/login', { state: { returnTo: '/ingressos', eventoId } });
     if (!window.confirm(`Reservar o espaço ${espaco.sigla} por R$ ${espaco.preco.toFixed(2)}?`)) return;
+    
     setIsSubmitting(true);
+    
     try {
+      // Simulação do tempo de gateway
+      await new Promise(resolve => setTimeout(resolve, 1200));
+
+      // Trava de concorrência: garante que 2 pessoas não comprem o mesmo camarote no mesmo segundo
       await runTransaction(db, async (t) => {
         const ref = doc(db, "espacos", espaco.id);
         const snap = await t.get(ref);
         if (!snap.exists() || snap.data().status !== 'disponivel') throw new Error('indisponivel');
-        t.update(ref, { status: "reservado", donoId: user.uid, donoNome: user.nome || user.email, dataReserva: new Date().toISOString(), checkinFeito: false });
+        
+        t.update(ref, { 
+          status: "reservado", 
+          donoId: user.uid, 
+          donoNome: user.nome || user.email, 
+          dataReserva: new Date().toISOString(), 
+          checkinFeito: false 
+        });
       });
+
       navigate('/minha-conta');
-    } catch (e) { alert("Indisponível no momento."); } finally { setIsSubmitting(false); }
+    } catch (e) { 
+      alert("Este espaço acabou de ser reservado por outra pessoa."); 
+    } finally { 
+      setIsSubmitting(false); 
+    }
   };
 
   if (!evento) return <div className="min-h-screen bg-[#FAFAFA] flex items-center justify-center"><div className="w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div></div>;

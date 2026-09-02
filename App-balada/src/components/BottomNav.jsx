@@ -1,45 +1,85 @@
 import { useContext } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
+import { Home, Ticket, Receipt, User, ScanLine, Wine, LayoutDashboard, Wallet, ClipboardCheck, LogIn } from 'lucide-react';
 import { AuthContext } from '../contexts/AuthContext';
-import { Home, Ticket, Settings } from 'lucide-react';
 
 export default function BottomNav() {
   const navigate = useNavigate();
   const location = useLocation();
   const { user } = useContext(AuthContext);
 
-  if (!user) return null;
+  // Esconde o menu inferior inteiro se o usuário estiver na tela de login
+  if (location.pathname === '/login') return null;
 
-  const rotaAtual = location.pathname;
-  if (rotaAtual === '/login' || rotaAtual === '/cardapio') return null;
+  let menu = [];
+
+  // 1. MENU DE QUEM NÃO FEZ LOGIN (Apenas o essencial)
+  if (!user) {
+    menu = [
+      { name: 'Home', icon: Home, path: '/home' },
+      { name: 'Entrar', icon: LogIn, path: '/login' }
+    ];
+  } 
+  // 2. MENU DO SEGURANÇA
+  else if (user.role === 'seguranca') {
+    menu = [
+      { name: 'Ler QR', icon: ScanLine, path: '/catraca' },
+      { name: 'Perfil', icon: User, path: '/meus-dados' }
+    ];
+  } 
+  // 3. MENU DO GARÇOM
+  else if (user.role === 'garcom') {
+    menu = [
+      { name: 'Mesas', icon: ClipboardCheck, path: '/garcom' },
+      { name: 'Perfil', icon: User, path: '/meus-dados' }
+    ];
+  } 
+  // 4. MENU DO BARMAN
+  else if (user.role === 'barman') {
+    menu = [
+      { name: 'KDS', icon: Wine, path: '/bar' },
+      { name: 'Perfil', icon: User, path: '/meus-dados' }
+    ];
+  } 
+  // 5. MENU DO CAIXA
+  else if (user.role === 'caixa') {
+    menu = [
+      { name: 'Caixa PDV', icon: Wallet, path: '/caixa' },
+      { name: 'Perfil', icon: User, path: '/meus-dados' }
+    ];
+  } 
+  // 6. MENU DO SÓCIO (ADMIN)
+  else if (user.role === 'admin') {
+    menu = [
+      { name: 'Vitrine', icon: Home, path: '/home' },
+      { name: 'Admin', icon: LayoutDashboard, path: '/admin' },
+      { name: 'Perfil', icon: User, path: '/meus-dados' }
+    ];
+  } 
+  // 7. MENU DO CLIENTE
+  else {
+    menu = [
+      { name: 'Home', icon: Home, path: '/home' },
+      { name: 'Ingressos', icon: Ticket, path: '/meus-ingressos' },
+      { name: 'Comanda', icon: Receipt, path: '/minha-conta' },
+      { name: 'Perfil', icon: User, path: '/meus-dados' }
+    ];
+  }
 
   return (
-    <nav className="fixed bottom-0 left-0 right-0 sm:bottom-6 sm:left-1/2 sm:-translate-x-1/2 sm:max-w-[400px] sm:rounded-full bg-white/90 backdrop-blur-xl border-t sm:border border-zinc-200 py-3 px-6 flex justify-around items-center z-50 shadow-[0_-10px_40px_rgba(0,0,0,0.03)] sm:shadow-[0_8px_30px_rgba(0,0,0,0.08)] transition-all duration-300">
-      <button
-        onClick={() => navigate('/home')}
-        className={`flex flex-col items-center gap-1 transition-colors ${rotaAtual === '/home' ? 'text-indigo-600 font-black' : 'text-zinc-400 hover:text-indigo-500'}`}
-      >
-        <Home className="w-6 h-6" strokeWidth={rotaAtual === '/home' ? 2.5 : 2} />
-        <span className="text-[10px] tracking-wide font-bold">Início</span>
-      </button>
-
-      <button
-        onClick={() => navigate('/minha-conta')}
-        className={`flex flex-col items-center gap-1 transition-colors ${rotaAtual === '/minha-conta' ? 'text-indigo-600 font-black' : 'text-zinc-400 hover:text-indigo-500'}`}
-      >
-        <Ticket className="w-6 h-6" strokeWidth={rotaAtual === '/minha-conta' ? 2.5 : 2} />
-        <span className="text-[10px] tracking-wide font-bold">Carteira</span>
-      </button>
-
-      {(user?.isAdmin || user?.email === 'seuemail@teste.com') && (
-        <button
-          onClick={() => navigate('/admin')}
-          className={`flex flex-col items-center gap-1 transition-colors ${rotaAtual === '/admin' ? 'text-indigo-600 font-black' : 'text-zinc-400 hover:text-indigo-500'}`}
-        >
-          <Settings className="w-6 h-6" strokeWidth={rotaAtual === '/admin' ? 2.5 : 2} />
-          <span className="text-[10px] tracking-wide font-bold">Admin</span>
-        </button>
-      )}
-    </nav>
+    <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-zinc-200 pb-safe z-50 shadow-[0_-5px_20px_rgba(0,0,0,0.03)]">
+      <div className="max-w-md mx-auto flex justify-around px-2 py-3">
+        {menu.map((item) => {
+          const isActive = location.pathname.includes(item.path);
+          const Icon = item.icon;
+          return (
+            <button key={item.name} onClick={() => navigate(item.path)} className={`flex flex-col items-center gap-1 transition-colors px-4 ${isActive ? 'text-indigo-600' : 'text-zinc-400 hover:text-zinc-600'}`}>
+              <Icon className={`w-6 h-6 ${isActive ? 'fill-indigo-50/50' : ''}`} />
+              <span className={`text-[10px] font-bold ${isActive ? 'font-black' : ''}`}>{item.name}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }

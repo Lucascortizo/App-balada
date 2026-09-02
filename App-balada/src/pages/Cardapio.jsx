@@ -1,203 +1,210 @@
 import { useState, useEffect, useContext } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { collection, onSnapshot, query, where, doc, writeBatch, increment } from 'firebase/firestore';
+import { collection, onSnapshot, addDoc, query, where } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import { AuthContext } from '../contexts/AuthContext';
-import { ArrowLeft, GlassWater, Crown, ShoppingBag } from 'lucide-react';
+import toast from 'react-hot-toast';
+import BottomNav from '../components/BottomNav';
+import { ArrowLeft, AlertTriangle, Wine, LogIn } from 'lucide-react';
 
 export default function Cardapio() {
-  const [cart, setCart] = useState([]);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [menuItems, setMenuItems] = useState([]);
-  const [saldoVIP, setSaldoVIP] = useState(0);
-
   const { user } = useContext(AuthContext);
   const navigate = useNavigate();
   const location = useLocation();
   const eventoId = location.state?.eventoId;
 
+  const [produtos, setProdutos] = useState([]);
+  const [carrinho, setCarrinho] = useState({});
+  const [modalCheckout, setModalCheckout] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const [categoriaAtiva, setCategoriaAtiva] = useState('Todos');
+  const [meusEspacos, setMeusEspacos] = useState([]);
+  const [destinoSelecionado, setDestinoSelecionado] = useState('');
+
   useEffect(() => {
-    if (!user || !eventoId) {
-      navigate('/home');
-      return;
-    }
+    if (!eventoId) return navigate('/home');
 
-    const unsubCardapio = onSnapshot(collection(db, "cardapio"), (snapshot) => {
-      setMenuItems(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-    });
-
-    let totalConsumoComprado = 0;
-    let totalGastoNoBar = 0;
-
-    const calcularSaldoDisponivel = () => {
-      const saldo = totalConsumoComprado - totalGastoNoBar;
-      setSaldoVIP(saldo > 0 ? saldo : 0);
-    };
-
-    const unsubEspacos = onSnapshot(query(collection(db, "espacos"), where("donoId", "==", user.uid), where("eventoId", "==", eventoId)), (snapshot) => {
-      totalConsumoComprado = snapshot.docs.reduce((acc, doc) => acc + (Number(doc.data().consumacao) || 0), 0);
-      calcularSaldoDisponivel();
-    });
-
-    const unsubPedidos = onSnapshot(query(collection(db, "pedidos"), where("clienteId", "==", user.uid), where("eventoId", "==", eventoId)), (snapshot) => {
-      totalGastoNoBar = snapshot.docs.reduce((acc, doc) => acc + (Number(doc.data().total) || 0), 0);
-      calcularSaldoDisponivel();
-    });
-
-    return () => { 
-      unsubCardapio(); 
-      unsubEspacos(); 
-      unsubPedidos(); 
-    };
-  }, [user, navigate, eventoId]);
-
-  const addToCart = (item) => setCart([...cart, item]);
-  
-  const totalCart = cart.reduce((acc, item) => acc + item.preco, 0);
-
-  const finalizarPedido = async () => {
-    if (cart.length === 0 || !user) return;
+    // 1. Busca o cardápio (PÚBLICO)
+    const unsubCardapio = onSnapshot(collection(db, "cardapio"), snap => setProdutos(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
     
-    setIsSubmitting(true);
-    const usouSaldoVIP = saldoVIP >= totalCart;
+    let unsubDono = () => {};
+    let unsubConv = () => {};
 
-    try {
-      const batch = writeBatch(db);
-      const novoPedidoRef = doc(collection(db, "pedidos"));
-      
-      batch.set(novoPedidoRef, {
-        eventoId: eventoId, 
-        clienteId: user.uid,
-        clienteNome: user.nome || "Anônimo",
-        itens: cart,
-        total: totalCart,
-        status: "pendente",
-        formaPagamento: usouSaldoVIP ? 'Saldo VIP' : 'Comanda Saída',
-        dataHora: new Date().toISOString()
+    // 2. Busca as mesas APENAS SE o usuário já estiver logado
+    if (user) {
+      const qDono = query(collection(db, "espacos"), where("eventoId", "==", eventoId), where("donoId", "==", user.uid));
+      unsubDono = onSnapshot(qDono, snap => {
+        setMeusEspacos(prev => [...prev.filter(p => p.donoId !== user.uid), ...snap.docs.map(d => ({ id: d.id, ...d.data() }))]);
       });
-
-      const contagemItens = {};
-      cart.forEach(item => { 
-        contagemItens[item.id] = (contagemItens[item.id] || 0) + 1; 
-      });
-
-      for (const [itemId, qtdComprada] of Object.entries(contagemItens)) {
-        batch.update(doc(db, "cardapio", itemId), { 
-          estoque: increment(-qtdComprada) 
-        });
-      }
-
-      await batch.commit();
-      alert(usouSaldoVIP ? "Pedido descontado do seu VIP com sucesso!" : "Adicionado à sua Comanda digital!");
-      setCart([]);
       
-    } catch (error) { 
-      alert("Ocorreu um erro ao enviar seu pedido."); 
-    } finally { 
-      setIsSubmitting(false); 
+      const qConv = query(collection(db, "espacos"), where("eventoId", "==", eventoId), where("convidadosIds", "array-contains", user.uid));
+      unsubConv = onSnapshot(qConv, snap => {
+        setMeusEspacos(prev => [...prev.filter(p => !p.convidadosIds?.includes(user.uid)), ...snap.docs.map(d => ({ id: d.id, ...d.data() }))]);
+      });
     }
+
+    return () => { unsubCardapio(); unsubDono(); unsubConv(); };
+  }, [eventoId, navigate, user]);
+
+  const alterarQtd = (produtoId, delta) => {
+    const atual = carrinho[produtoId] || 0;
+    const novo = Math.max(0, atual + delta);
+    if (novo === 0) {
+      const copia = { ...carrinho };
+      delete copia[produtoId];
+      setCarrinho(copia);
+    } else setCarrinho({ ...carrinho, [produtoId]: novo });
   };
 
-  if (!user || !eventoId) return null;
+  const calcularTotal = () => Object.entries(carrinho).reduce((acc, [pId, qtd]) => {
+    const prod = produtos.find(p => p.id === pId); return acc + (prod ? prod.preco * qtd : 0);
+  }, 0);
+
+  const categorias = ['Todos', ...Array.from(new Set(produtos.map(p => p.categoria || 'Geral'))).sort()];
+  const produtosFiltrados = categoriaAtiva === 'Todos' ? produtos : produtos.filter(p => (p.categoria || 'Geral') === categoriaAtiva);
+
+  const temItemVIP = Object.keys(carrinho).some(pId => {
+    const prod = produtos.find(p => p.id === pId);
+    return prod?.apenasVIP === true; 
+  });
+
+  // O "Porteiro" do Checkout
+  const abrirCheckout = () => {
+    if (!user) {
+      toast('Faça login para fazer pedidos!', { icon: '👋' });
+      navigate('/login');
+      return;
+    }
+    setDestinoSelecionado(''); 
+    setModalCheckout(true);
+  };
+
+  const fecharPedido = async () => {
+    if (temItemVIP && destinoSelecionado === 'balcao') return toast.error("Este pedido possui bebidas exclusivas para Camarotes.");
+    if (!destinoSelecionado) return toast.error("Selecione onde deseja receber o pedido.");
+
+    setIsSubmitting(true);
+    const toastId = toast.loading('Enviando pedido para o bar...');
+
+    try {
+      const itensFormatados = Object.entries(carrinho).map(([pId, qtd]) => {
+        const prod = produtos.find(p => p.id === pId);
+        return { produtoId: pId, nome: prod.nome, precoUnitario: prod.preco, quantidade: qtd };
+      });
+
+      let mesaSigla = null;
+      if (destinoSelecionado !== 'balcao') {
+        const espaco = meusEspacos.find(e => e.id === destinoSelecionado);
+        mesaSigla = espaco ? espaco.sigla : null;
+      }
+
+      await addDoc(collection(db, "pedidos"), {
+        eventoId, clienteId: user.uid, clienteNome: user.nome || user.email,
+        mesaSigla: mesaSigla, tipoEntrega: destinoSelecionado === 'balcao' ? 'balcao' : 'mesa',
+        itens: itensFormatados, total: calcularTotal(),
+        status: destinoSelecionado === 'balcao' ? 'pronto' : 'pendente', 
+        garcomId: null, data: new Date().toISOString()
+      });
+
+      toast.success("Pedido recebido pela cozinha!", { id: toastId });
+      setCarrinho({}); setModalCheckout(false); navigate('/minha-conta');
+    } catch (e) { 
+      toast.error("Erro ao enviar pedido.", { id: toastId }); 
+    } finally { setIsSubmitting(false); }
+  };
 
   return (
-    <div className="min-h-screen bg-[#FAFAFA] text-zinc-900 font-sans relative pb-40">
-      
-      <header className="sticky top-0 z-40 bg-white/80 backdrop-blur-xl border-b border-zinc-200 px-6 py-4 flex items-center justify-between shadow-sm">
-        <button 
-          onClick={() => navigate(-1)} 
-          className="bg-zinc-100 hover:bg-zinc-200 text-zinc-600 p-2.5 rounded-full transition-transform active:scale-95"
-        >
-          <ArrowLeft className="w-5 h-5" />
-        </button>
-        <h1 className="text-xl font-black tracking-tight text-zinc-900">Bar Digital</h1>
-        <div className="w-10"></div>
+    <div className="min-h-screen bg-[#FAFAFA] text-zinc-900 pb-32">
+      <style>{`.hide-scrollbar::-webkit-scrollbar { display: none; } .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }`}</style>
+      <header className="sticky top-0 z-40 bg-white shadow-sm border-b border-zinc-200">
+        <div className="px-6 py-4 flex justify-between items-center">
+          <button onClick={() => navigate(-1)} className="bg-zinc-100 p-2 rounded-full active:scale-95 transition-transform"><ArrowLeft className="w-5 h-5"/></button>
+          <h1 className="font-black text-lg tracking-tight">Cardápio</h1>
+          <div className="w-9"></div>
+        </div>
+        <div className="px-4 py-3 overflow-x-auto hide-scrollbar flex gap-2">
+          {categorias.map(cat => (
+            <button key={cat} onClick={() => setCategoriaAtiva(cat)} className={`whitespace-nowrap px-5 py-2 rounded-full text-xs font-black transition-all shadow-sm border ${categoriaAtiva === cat ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-zinc-600 border-zinc-200'}`}>
+              {cat}
+            </button>
+          ))}
+        </div>
       </header>
 
-      <main className="p-6 max-w-lg mx-auto">
-        
-        {saldoVIP > 0 && (
-          <div className="mb-8 bg-gradient-to-br from-indigo-600 to-purple-600 p-8 rounded-[2rem] shadow-[0_8px_30px_rgba(79,70,229,0.3)] flex justify-between items-center text-white relative overflow-hidden">
-            <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full blur-2xl -mr-10 -mt-10 pointer-events-none"></div>
-            <div className="relative z-10">
-              <p className="text-[10px] font-black uppercase tracking-widest opacity-80 mb-1">
-                Crédito VIP
-              </p>
-              <p className="text-4xl font-black tracking-tight">
-                R$ {saldoVIP.toFixed(2)}
-              </p>
+      <main className="max-w-md mx-auto p-4 space-y-4 animate-fade-in">
+        {!user && (
+          <div className="bg-indigo-50 border border-indigo-100 p-4 rounded-2xl flex items-center justify-between mb-2">
+            <div>
+              <p className="text-sm font-black text-indigo-900">Modo Visitante</p>
+              <p className="text-[10px] font-bold text-indigo-600 uppercase tracking-widest mt-0.5">Faça login para pedir</p>
             </div>
-            <Crown className="w-12 h-12 opacity-90 relative z-10 drop-shadow-md text-indigo-100" />
+            <button onClick={() => navigate('/login')} className="bg-indigo-600 text-white px-4 py-2 rounded-xl text-xs font-black shadow-sm flex items-center gap-1.5 active:scale-95"><LogIn className="w-3 h-3"/> Entrar</button>
           </div>
         )}
 
-        <div className="space-y-4">
-          <h2 className="text-[11px] text-zinc-400 uppercase tracking-widest font-black mb-4 pl-2">
-            Cardápio Oficial
-          </h2>
-          
-          {menuItems.map((item) => {
-            const itensDesteNoCarrinho = cart.filter(c => c.id === item.id).length;
-            const semEstoque = item.estoque <= 0 || itensDesteNoCarrinho >= item.estoque;
-            
-            return (
-              <div 
-                key={item.id} 
-                className={`p-4 rounded-3xl border transition-all duration-300 flex items-center justify-between gap-4 ${
-                  semEstoque ? 'bg-zinc-50 border-zinc-200 opacity-60' : 'bg-white border-zinc-200 shadow-sm hover:border-indigo-200 hover:shadow-md'
-                }`}
-              >
-                <div className="flex items-center gap-4">
-                  <div className={`w-16 h-16 bg-zinc-50 rounded-2xl flex items-center justify-center text-zinc-400 shadow-inner ${semEstoque ? 'grayscale' : ''}`}>
-                    <GlassWater className="w-8 h-8" />
-                  </div>
-                  <div>
-                    <h3 className={`font-black text-lg leading-tight mb-1 ${semEstoque ? 'line-through text-zinc-400' : 'text-zinc-900'}`}>
-                      {item.nome}
-                    </h3>
-                    <p className="text-indigo-600 font-black text-sm">
-                      R$ {item.preco.toFixed(2)}
-                    </p>
-                  </div>
-                </div>
-                
-                <button 
-                  onClick={() => addToCart(item)} 
-                  disabled={semEstoque} 
-                  className={`w-12 h-12 rounded-full flex items-center justify-center font-black text-xl transition-transform active:scale-90 ${
-                    semEstoque ? 'bg-zinc-100 text-zinc-400' : 'bg-zinc-900 text-white hover:bg-zinc-800 shadow-md'
-                  }`}
-                >
-                  +
-                </button>
-              </div>
-            );
-          })}
-        </div>
+        {produtosFiltrados.length === 0 && <p className="text-center text-zinc-500 py-10 font-bold">Nenhum item nesta categoria.</p>}
+        
+        {produtosFiltrados.map(produto => (
+          <div key={produto.id} className="bg-white p-3 rounded-2xl border border-zinc-200 shadow-sm flex gap-4 items-center">
+            <div className="w-20 h-20 rounded-xl bg-zinc-50 border border-zinc-100 flex-shrink-0 overflow-hidden flex items-center justify-center relative">
+              {produto.imagem ? <img src={produto.imagem} alt={produto.nome} className="w-full h-full object-cover" /> : <Wine className="w-6 h-6 text-zinc-300" />}
+            </div>
+            <div className="flex-1 min-w-0 py-1">
+              <p className="font-black text-zinc-900 leading-tight truncate">{produto.nome}</p>
+              {produto.descricao && <p className="text-[10px] text-zinc-500 mt-1 line-clamp-2 leading-tight">{produto.descricao}</p>}
+              <p className="text-indigo-600 font-black text-sm mt-1.5">R$ {produto.preco.toFixed(2)}</p>
+            </div>
+            <div className="flex flex-col items-center gap-1 bg-zinc-50 border border-zinc-200 rounded-xl p-1 flex-shrink-0">
+              <button onClick={() => alterarQtd(produto.id, 1)} className="w-7 h-7 font-black bg-indigo-600 text-white rounded-lg shadow-sm flex items-center justify-center active:scale-95">+</button>
+              <span className="w-7 text-center font-black text-xs">{carrinho[produto.id] || 0}</span>
+              <button onClick={() => alterarQtd(produto.id, -1)} className="w-7 h-7 font-black bg-white text-zinc-600 rounded-lg shadow-sm border border-zinc-200 flex items-center justify-center active:scale-95">-</button>
+            </div>
+          </div>
+        ))}
       </main>
 
-      {/* Checkout Fixo no Rodapé */}
-      {cart.length > 0 && (
-        <div className="fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-xl border-t border-zinc-200 p-6 z-50">
-          <div className="max-w-lg mx-auto flex items-center justify-between gap-6">
-            <div className="flex-1">
-              <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest mb-0.5 flex items-center gap-1">
-                <ShoppingBag className="w-3 h-3" /> {cart.length} {cart.length === 1 ? 'item' : 'itens'}
-              </p>
-              <p className="text-3xl font-black text-zinc-900 tracking-tight leading-none">
-                R$ {totalCart.toFixed(2)}
-              </p>
-            </div>
-            <button 
-              onClick={finalizarPedido} 
-              disabled={isSubmitting} 
-              className="bg-indigo-600 hover:bg-indigo-700 text-white px-8 py-4 rounded-2xl font-black text-lg shadow-[0_8px_20px_rgba(79,70,229,0.3)] active:scale-95 transition-all disabled:opacity-70 disabled:active:scale-100 flex-1 flex justify-center items-center"
-            >
-              {isSubmitting ? 'Enviando...' : 'Fazer Pedido'}
+      {Object.keys(carrinho).length > 0 && (
+        <div className="fixed bottom-0 left-0 right-0 p-4 bg-white border-t border-zinc-200 z-50 shadow-[0_-10px_20px_rgba(0,0,0,0.05)] animate-slide-up">
+          <div className="max-w-md mx-auto">
+            <button onClick={abrirCheckout} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-black py-4 rounded-xl shadow-md flex justify-between px-6 items-center active:scale-95 transition-all">
+              <span>{user ? 'Finalizar Pedido' : 'Login para Pedir'}</span>
+              <span>R$ {calcularTotal().toFixed(2)}</span>
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* ================= MODAL CHECKOUT ================= */}
+      {modalCheckout && user && (
+        <div className="fixed inset-0 z-50 bg-zinc-900/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 animate-fade-in">
+          <div className="bg-white w-full max-w-md rounded-t-[2rem] sm:rounded-3xl p-6 relative shadow-2xl">
+            <h3 className="text-xl font-black mb-4">Como deseja receber?</h3>
+            {temItemVIP && (
+              <div className="bg-orange-50 border border-orange-200 p-4 rounded-2xl flex gap-3 mb-4 items-start">
+                <AlertTriangle className="w-5 h-5 text-orange-500 flex-shrink-0" />
+                <p className="text-xs text-orange-800 font-bold leading-relaxed">Você incluiu Combos/Garrafas. Por segurança, a entrega é exclusiva para Camarotes.</p>
+              </div>
+            )}
+            <div className="space-y-3 mb-6">
+              <button onClick={() => !temItemVIP && setDestinoSelecionado('balcao')} disabled={temItemVIP} className={`w-full text-left p-4 rounded-2xl border-2 transition-colors ${destinoSelecionado === 'balcao' ? 'border-indigo-600 bg-indigo-50' : temItemVIP ? 'border-zinc-200 bg-zinc-100 opacity-50 cursor-not-allowed' : 'border-zinc-200 bg-white hover:border-indigo-200'}`}>
+                <p className="font-black text-zinc-900">Retirar no Balcão</p>
+                <p className="text-xs text-zinc-500 font-medium">Bebidas em copos ou latas.</p>
+              </button>
+              {meusEspacos.map(esp => (
+                <button key={esp.id} onClick={() => setDestinoSelecionado(esp.id)} className={`w-full text-left p-4 rounded-2xl border-2 transition-colors ${destinoSelecionado === esp.id ? 'border-indigo-600 bg-indigo-50' : 'border-zinc-200 bg-white hover:border-indigo-200'}`}>
+                  <p className="font-black text-zinc-900">Entregar no {esp.sigla}</p>
+                  <p className="text-xs text-zinc-500 font-medium">Um garçom levará até sua mesa.</p>
+                </button>
+              ))}
+            </div>
+            <div className="flex gap-3">
+              <button onClick={() => setModalCheckout(false)} className="flex-1 bg-zinc-100 hover:bg-zinc-200 text-zinc-600 font-black py-4 rounded-xl transition-colors">Voltar</button>
+              <button onClick={fecharPedido} disabled={isSubmitting || (temItemVIP && meusEspacos.length === 0)} className="flex-[2] bg-indigo-600 hover:bg-indigo-700 text-white font-black py-4 rounded-xl shadow-md disabled:opacity-50 transition-all active:scale-95">Confirmar Pedido</button>
+            </div>
           </div>
         </div>
       )}
     </div>
   );
-}
+} 

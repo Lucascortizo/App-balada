@@ -1,220 +1,245 @@
-import { useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
-import { Scanner } from '@yudiel/react-qr-scanner';
-import { doc, getDoc, updateDoc, collection, query, where, getDocs, addDoc } from 'firebase/firestore';
+import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { collection, onSnapshot, doc, getDoc, updateDoc, query, where, getDocs } from 'firebase/firestore';
 import { db } from '../services/firebase';
-import { ArrowLeft, CheckCircle2, XCircle, AlertTriangle, ScanLine } from 'lucide-react';
+import { Scanner } from '@yudiel/react-qr-scanner';
+import toast from 'react-hot-toast';
+import BottomNav from '../components/BottomNav';
+import { ScanLine, CheckCircle2, XCircle, ArrowLeft, ShieldCheck, RefreshCw } from 'lucide-react';
 
 export default function Catraca() {
-  const [status, setStatus] = useState('aguardando'); 
-  const [mensagem, setMensagem] = useState('');
-  const [modo, setModo] = useState('entrada'); // 'entrada' ou 'saida'
-
-  const location = useLocation();
   const navigate = useNavigate();
-  const eventoId = location.state?.eventoId;
+  const [eventosGlobais, setEventosGlobais] = useState([]);
+  const [eventoSelecionado, setEventoSelecionado] = useState(null);
+  
+  // Controle do Scanner
+  const [statusLeitura, setStatusLeitura] = useState('aguardando'); // 'aguardando', 'processando', 'sucesso', 'erro'
+  const [resultado, setResultado] = useState(null);
 
-  if (!eventoId) {
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "eventos"), snap => {
+      setEventosGlobais(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
+    return () => unsub();
+  }, []);
+
+  const validarQRCode = async (textoQrCode) => {
+    if (statusLeitura !== 'aguardando') return; 
+    setStatusLeitura('processando');
+
+    try {
+      const partes = textoQrCode.split('|');
+      const tipo = partes[0]; 
+      const idItem = partes[1];
+      const idUsuario = partes[2];
+
+      if (!tipo || !idItem) {
+        toast.error('QR Code Inválido ou Ilegível.');
+        lancarResultado('erro', 'QR Code não reconhecido pelo sistema.');
+        return;
+      }
+
+      // 1. LÓGICA DE ENTRADA (PISTA)
+      if (tipo === 'ingresso') {
+        const docRef = doc(db, 'ingressos_vendidos', idItem);
+        const snap = await getDoc(docRef);
+        
+        if (!snap.exists()) return lancarResultado('erro', 'Ingresso não encontrado no banco.');
+        
+        const ingresso = snap.data();
+        if (ingresso.status === 'usado') {
+          toast.error('Ingresso já foi utilizado!');
+          return lancarResultado('erro', `Barrado! Já utilizado por ${ingresso.donoNome}.`);
+        }
+        
+        await updateDoc(docRef, { status: 'usado', dataUso: new Date().toISOString() });
+        toast.success('Entrada Liberada!');
+        return lancarResultado('sucesso', `Entrada Pista liberada para ${ingresso.donoNome}.`);
+      }
+
+      // 2. LÓGICA DE ENTRADA (TITULAR CAMAROTE)
+      if (tipo === 'espaco') {
+        const docRef = doc(db, 'espacos', idItem);
+        const snap = await getDoc(docRef);
+        
+        if (!snap.exists()) return lancarResultado('erro', 'Camarote não encontrado.');
+        
+        const espaco = snap.data();
+        if (espaco.checkinFeito) {
+          toast.error('Check-in já realizado.');
+          return lancarResultado('erro', `O titular (${espaco.donoNome}) já está na casa.`);
+        }
+        
+        await updateDoc(docRef, { checkinFeito: true, checkinEm: new Date().toISOString() });
+        toast.success('Titularidade Confirmada!');
+        return lancarResultado('sucesso', `Acesso VIP Liberado: ${espaco.sigla} - Titular: ${espaco.donoNome}`);
+      }
+
+      // 3. LÓGICA DE ENTRADA (CONVIDADO VIP)
+      if (tipo === 'convidado') {
+        const docRef = doc(db, 'espacos', idItem);
+        const snap = await getDoc(docRef);
+        const espaco = snap.data();
+        
+        const amigo = espaco.convidados?.find(c => c.uid === idUsuario);
+        if (!amigo) {
+          toast.error('Não está na lista VIP.');
+          return lancarResultado('erro', 'Barrado! Convidado não consta na lista deste camarote.');
+        }
+
+        toast.success('Lista VIP Confirmada!');
+        return lancarResultado('sucesso', `Convidado VIP Liberado: ${amigo.nome} (${espaco.sigla})`);
+      }
+
+      // 4. LÓGICA DO BAR (RETIRADA DE BEBIDA)
+      if (tipo === 'retirada') {
+        const docRef = doc(db, 'pedidos', idItem);
+        const snap = await getDoc(docRef);
+        const pedido = snap.data();
+
+        if (pedido.status === 'entregue') {
+          toast.error('Bebida já retirada!');
+          return lancarResultado('erro', 'Atenção! Esta bebida já foi entregue.');
+        }
+
+        await updateDoc(docRef, { status: 'entregue' });
+        toast.success('Bebida Entregue!');
+        return lancarResultado('sucesso', `Ficha Baixada! Pedido de ${pedido.clienteNome} concluído.`);
+      }
+
+      // 5. LÓGICA DE SAÍDA (PAGAMENTO DA COMANDA)
+      if (tipo === 'saida') {
+        const eventoId = partes[1];
+        const clienteId = partes[2];
+
+        const espacosSnap = await getDocs(query(collection(db, "espacos"), where("eventoId", "==", eventoId), where("donoId", "==", clienteId)));
+        const pedidosSnap = await getDocs(query(collection(db, "pedidos"), where("eventoId", "==", eventoId), where("clienteId", "==", clienteId)));
+        const pagamentosSnap = await getDocs(query(collection(db, "pagamentos_comanda"), where("eventoId", "==", eventoId), where("clienteId", "==", clienteId)));
+        const splitsEnviadosSnap = await getDocs(query(collection(db, "cobrancas_split"), where("eventoId", "==", eventoId), where("deId", "==", clienteId), where("status", "==", "aceito")));
+        const splitsRecebidosSnap = await getDocs(query(collection(db, "cobrancas_split"), where("eventoId", "==", eventoId), where("paraId", "==", clienteId), where("status", "==", "aceito")));
+
+        const totalVIP = espacosSnap.docs.reduce((a, d) => a + (d.data().consumacao || 0), 0);
+        const totalBar = pedidosSnap.docs.reduce((a, d) => a + (d.data().total || 0), 0);
+        const totalPago = pagamentosSnap.docs.reduce((a, d) => a + (d.data().valorPago || 0), 0);
+        const descSplits = splitsEnviadosSnap.docs.reduce((a, d) => a + (d.data().valor || 0), 0);
+        const adcSplits = splitsRecebidosSnap.docs.reduce((a, d) => a + (d.data().valor || 0), 0);
+
+        const saldoDevedor = Math.max(0, totalBar + adcSplits - totalVIP - totalPago - descSplits);
+
+        if (saldoDevedor > 0) {
+          toast.error('Comanda em aberto!');
+          return lancarResultado('erro', `BARRADO! Cliente possui R$ ${saldoDevedor.toFixed(2)} em aberto.`);
+        }
+
+        toast.success('Saída Liberada!');
+        return lancarResultado('sucesso', 'Comanda Zerada. Pode liberar a catraca de saída!');
+      }
+
+      toast.error('Formato não reconhecido');
+      lancarResultado('erro', 'Código QR inválido para a operação atual.');
+
+    } catch (error) {
+      toast.error('Erro de conexão');
+      lancarResultado('erro', 'Erro ao validar o ingresso com o banco de dados.');
+    }
+  };
+
+  const lancarResultado = (status, mensagem) => {
+    setResultado(mensagem);
+    setStatusLeitura(status);
+  };
+
+  const resetarScanner = () => {
+    setStatusLeitura('aguardando');
+    setResultado(null);
+  };
+
+  if (!eventoSelecionado) {
     return (
-      <div className="min-h-screen bg-[#FAFAFA] flex flex-col items-center justify-center p-6 text-center">
-        <div className="w-24 h-24 bg-red-50 text-red-500 rounded-full flex items-center justify-center mb-6">
-          <AlertTriangle className="w-12 h-12" />
-        </div>
-        <h2 className="text-2xl font-black text-zinc-900 mb-2 tracking-tight">Acesso Negado</h2>
-        <p className="text-zinc-500 font-medium mb-8 max-w-xs mx-auto">
-          Inicie a catraca através do painel de Administração para vincular a um evento ativo.
-        </p>
-        <button 
-          onClick={() => navigate('/admin')} 
-          className="bg-zinc-900 text-white px-8 py-4 rounded-2xl font-black shadow-lg active:scale-95 transition-transform"
-        >
-          Voltar ao Admin
-        </button>
+      <div className="min-h-screen bg-[#FAFAFA] text-zinc-900 font-sans pb-32">
+        <header className="bg-white p-8 border-b border-zinc-200 shadow-sm rounded-b-[2rem]">
+          <h1 className="text-3xl font-black flex items-center gap-2 tracking-tight text-zinc-900">
+            <ShieldCheck className="text-indigo-600 w-8 h-8"/> Segurança
+          </h1>
+          <p className="text-zinc-500 text-sm mt-1 font-bold">Controle de Acesso e Catraca</p>
+        </header>
+        
+        <main className="max-w-md mx-auto p-6 space-y-4 mt-4">
+          <h2 className="text-xs font-black text-zinc-400 uppercase tracking-widest mb-2">Selecione o Evento Operante</h2>
+          {eventosGlobais.map(evento => (
+            <button key={evento.id} onClick={() => setEventoSelecionado(evento)} className="w-full bg-white border border-zinc-200 p-6 rounded-3xl text-left hover:border-indigo-500 transition-all active:scale-95 shadow-sm">
+              <h3 className="text-xl font-black text-zinc-900">{evento.nome}</h3>
+              <p className="text-indigo-600 text-xs mt-2 font-bold uppercase tracking-widest flex items-center gap-2"><ScanLine className="w-4 h-4"/> Abrir Câmera</p>
+            </button>
+          ))}
+        </main>
+        <BottomNav />
       </div>
     );
   }
 
-  const resetar = (delay = 3000) => {
-    setTimeout(() => {
-      setStatus('aguardando');
-      setMensagem('');
-    }, delay);
-  };
-
-  const aoLerCodigo = async (codigos) => {
-    if (status !== 'aguardando') return;
-    
-    const qrBruto = codigos[0]?.rawValue;
-    if (!qrBruto || !qrBruto.includes('|')) {
-      setMensagem('QR Code Inválido.');
-      setStatus('erro');
-      return resetar();
-    }
-
-    setStatus('validando');
-    const [tipoItem, idDocumento, idClienteSaida] = qrBruto.split('|');
-
-    try {
-      if (modo === 'saida') {
-        if (tipoItem !== 'saida') {
-          setMensagem('Use o Passe Verde de Saída.');
-          setStatus('erro'); return resetar();
-        }
-
-        if (idDocumento !== eventoId) {
-          setMensagem('Passe de outra festa!');
-          setStatus('erro'); return resetar();
-        }
-
-        const qSaidaRegistrada = await getDocs(query(collection(db, "saidas_realizadas"), where("clienteId", "==", idClienteSaida), where("eventoId", "==", eventoId)));
-        if (!qSaidaRegistrada.empty) {
-          setMensagem('PASSE JÁ UTILIZADO!');
-          setStatus('erro'); return resetar(4000);
-        }
-
-        const qPedidos = await getDocs(query(collection(db, "pedidos"), where("clienteId", "==", idClienteSaida), where("eventoId", "==", eventoId)));
-        const qEspacos = await getDocs(query(collection(db, "espacos"), where("donoId", "==", idClienteSaida), where("eventoId", "==", eventoId)));
-        const qPagamentos = await getDocs(query(collection(db, "pagamentos_comanda"), where("clienteId", "==", idClienteSaida), where("eventoId", "==", eventoId)));
-
-        const totalBar = qPedidos.docs.reduce((acc, doc) => acc + (Number(doc.data().total) || 0), 0);
-        const totalVIP = qEspacos.docs.reduce((acc, doc) => acc + (Number(doc.data().consumacao) || 0), 0);
-        const aPagar = Math.max(0, totalBar - totalVIP);
-
-        if (aPagar > 0 && qPagamentos.empty) {
-          setMensagem(`CALOTE! Devendo: R$ ${aPagar.toFixed(2)}`);
-          setStatus('erro'); return resetar(5000);
-        }
-
-        await addDoc(collection(db, "saidas_realizadas"), {
-          clienteId: idClienteSaida, eventoId: eventoId, dataSaida: new Date().toISOString()
-        });
-
-        setMensagem('SAÍDA LIBERADA');
-        setStatus('sucesso'); return resetar();
-      }
-
-      if (modo === 'entrada') {
-        if (tipoItem === 'saida') {
-          setMensagem('Passe de saída negado. Use ingresso.');
-          setStatus('erro'); return resetar();
-        }
-
-        if (tipoItem === 'ingresso') {
-          const ingressoRef = doc(db, 'ingressos_vendidos', idDocumento);
-          const snap = await getDoc(ingressoRef);
-          
-          if (!snap.exists()) throw new Error("Não encontrado");
-          
-          const dados = snap.data();
-          if (dados.eventoId !== eventoId) { setMensagem('Ingresso de OUTRA festa!'); setStatus('erro'); return resetar(); }
-          if (dados.status === 'usado') { setMensagem('INGRESSO JÁ UTILIZADO!'); setStatus('erro'); return resetar(); }
-
-          await updateDoc(ingressoRef, { status: 'usado', checkinEm: new Date().toISOString() });
-          setMensagem('ACESSO LIBERADO');
-          setStatus('sucesso'); return resetar();
-        }
-
-        if (tipoItem === 'espaco') {
-          const espacoRef = doc(db, 'espacos', idDocumento);
-          const snap = await getDoc(espacoRef);
-          
-          if (!snap.exists()) throw new Error("Não encontrado");
-          
-          const dados = snap.data();
-          if (dados.eventoId !== eventoId) { setMensagem('Reserva de OUTRA festa!'); setStatus('erro'); return resetar(); }
-          if (dados.checkinFeito) { setMensagem(`${dados.tipo} JÁ ENTROU!`); setStatus('erro'); return resetar(); }
-
-          await updateDoc(espacoRef, { checkinFeito: true, checkinEm: new Date().toISOString() });
-          setMensagem(`VIP LIBERADO`);
-          setStatus('sucesso'); return resetar();
-        }
-      }
-    } catch (error) {
-      setMensagem('Ingresso não localizado.');
-      setStatus('erro'); resetar();
-    }
-  };
-
-  const statusColors = {
-    aguardando: 'bg-[#FAFAFA]',
-    validando: 'bg-amber-500',
-    sucesso: 'bg-emerald-500',
-    erro: 'bg-rose-500'
-  };
-
   return (
-    <div className={`min-h-screen flex flex-col items-center justify-center p-0 sm:p-6 font-sans transition-colors duration-500 ${statusColors[status]}`}>
-      
-      <div className="w-full h-screen sm:h-auto max-w-md bg-white sm:rounded-[2.5rem] overflow-hidden shadow-[0_20px_60px_rgba(0,0,0,0.08)] border border-zinc-100 flex flex-col">
-        
-        <header className="p-6 bg-white flex flex-col gap-6 z-10 shadow-sm relative">
-          <div className="flex justify-between items-center">
-            <button 
-              onClick={() => navigate('/admin')} 
-              className="text-zinc-500 flex items-center gap-2 font-black text-[10px] uppercase tracking-widest bg-zinc-100 px-4 py-2.5 rounded-full hover:bg-zinc-200 transition-colors active:scale-95"
-            >
-              <ArrowLeft className="w-3 h-3" /> Admin
-            </button>
-            <h1 className="text-xl font-black text-zinc-900 tracking-tight">Catraca</h1>
-          </div>
-          
-          <div className="flex bg-zinc-100 p-1.5 rounded-2xl w-full">
-            <button 
-              onClick={() => { setModo('entrada'); setStatus('aguardando'); }} 
-              className={`flex-1 py-4 text-xs font-black tracking-widest uppercase rounded-xl transition-all ${modo === 'entrada' ? 'bg-white text-indigo-600 shadow-sm' : 'text-zinc-400 hover:text-zinc-600'}`}
-            >
-              Entrada
-            </button>
-            <button 
-              onClick={() => { setModo('saida'); setStatus('aguardando'); }} 
-              className={`flex-1 py-4 text-xs font-black tracking-widest uppercase rounded-xl transition-all ${modo === 'saida' ? 'bg-white text-indigo-600 shadow-sm' : 'text-zinc-400 hover:text-zinc-600'}`}
-            >
-              Saída
-            </button>
-          </div>
-        </header>
+    <div className="min-h-screen bg-[#FAFAFA] text-zinc-900 font-sans pb-32 flex flex-col">
+      <header className="flex justify-between items-center bg-white p-4 border-b border-zinc-200 shadow-sm z-10 rounded-b-2xl">
+        <div>
+          <h1 className="text-lg font-black tracking-tight text-zinc-900 flex items-center gap-2"><ScanLine className="w-4 h-4 text-indigo-600"/> Scanner</h1>
+          <p className="text-indigo-600 font-bold text-[10px] uppercase tracking-widest mt-0.5">{eventoSelecionado.nome}</p>
+        </div>
+        <button onClick={() => setEventoSelecionado(null)} className="bg-zinc-100 text-zinc-600 px-4 py-2 rounded-xl text-xs font-black hover:bg-zinc-200 transition">Voltar</button>
+      </header>
 
-        <div className="relative bg-zinc-900 aspect-square w-full">
-          {status === 'aguardando' ? (
-            <Scanner
-              onScan={aoLerCodigo}
+      <main className="flex-1 flex flex-col items-center justify-center p-6">
+        
+        {statusLeitura === 'aguardando' && (
+          <div className="w-full max-w-sm rounded-[2rem] overflow-hidden border-4 border-white shadow-2xl relative bg-black aspect-square flex items-center justify-center">
+            <Scanner 
+              onScan={(result) => validarQRCode(result[0].rawValue)} 
               formats={['qr_code']}
               components={{ audio: false, finder: false }}
-              styles={{ container: { width: '100%', height: '100%' } }}
+              styles={{ video: { objectFit: 'cover' } }}
             />
-          ) : (
-            <div className={`absolute inset-0 flex flex-col items-center justify-center z-10 text-white ${status === 'validando' ? 'bg-amber-500' : status === 'sucesso' ? 'bg-emerald-500' : 'bg-rose-500'}`}>
-              {status === 'validando' ? <ScanLine className="w-24 h-24 animate-pulse drop-shadow-md" /> : 
-               status === 'sucesso' ? <CheckCircle2 className="w-24 h-24 drop-shadow-md" /> : 
-               <XCircle className="w-24 h-24 drop-shadow-md" />}
+            {/* Máscara de foco escurecida por cima da câmera */}
+            <div className="absolute inset-0 border-[40px] border-zinc-900/60 pointer-events-none flex items-center justify-center">
+              <div className="w-full h-full border-2 border-indigo-500/50 rounded-xl"></div>
             </div>
-          )}
-          
-          {status === 'aguardando' && (
-            <div className="absolute inset-0 border-[40px] border-black/40 flex items-center justify-center pointer-events-none">
-              <div className={`w-full h-full border-[4px] rounded-3xl ${modo === 'entrada' ? 'border-indigo-500/80' : 'border-green-500/80'}`}></div>
+            <p className="absolute bottom-4 bg-white/90 backdrop-blur-md px-4 py-2 rounded-full text-xs font-black text-zinc-900 z-10 shadow-sm">Aponte para o QR Code</p>
+          </div>
+        )}
+
+        {statusLeitura === 'processando' && (
+          <div className="text-center animate-pulse">
+            <div className="w-20 h-20 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+            <p className="font-black text-zinc-400 uppercase tracking-widest">Validando Servidor...</p>
+          </div>
+        )}
+
+        {statusLeitura === 'sucesso' && (
+          <div className="text-center w-full max-w-sm animate-slide-up">
+            <div className="w-32 h-32 bg-emerald-50 rounded-full flex items-center justify-center mx-auto mb-6 border border-emerald-100 shadow-[0_10px_30px_rgba(16,185,129,0.15)]">
+              <CheckCircle2 className="w-16 h-16 text-emerald-500" />
             </div>
-          )}
-        </div>
+            <h2 className="text-3xl font-black text-emerald-600 mb-2 tracking-tight">Liberado!</h2>
+            <p className="text-zinc-700 font-bold bg-white p-5 rounded-2xl border border-zinc-200 shadow-sm">{resultado}</p>
+            <button onClick={resetarScanner} className="w-full mt-8 bg-indigo-600 hover:bg-indigo-700 text-white font-black py-5 rounded-2xl uppercase tracking-widest flex items-center justify-center gap-2 transition active:scale-95 shadow-md">
+              <RefreshCw className="w-5 h-5"/> Ler Próximo
+            </button>
+          </div>
+        )}
 
-        <div className="flex-1 p-8 text-center flex flex-col items-center justify-center bg-white min-h-[160px]">
-          <p className="text-[10px] uppercase tracking-widest mb-3 font-black text-zinc-400">
-            {modo === 'entrada' ? 'Validador de Acesso' : 'Verificador de Comanda'}
-          </p>
-          
-          {status === 'aguardando' ? (
-            <p className="text-zinc-900 font-bold text-base flex flex-col items-center gap-2">
-              <ScanLine className="w-6 h-6 text-zinc-300" />
-              Posicione o QR Code<br/>no centro da tela
-            </p>
-          ) : (
-            <p className={`text-4xl font-black tracking-tight leading-none ${status === 'sucesso' ? 'text-emerald-600' : status === 'validando' ? 'text-amber-600' : 'text-rose-600'}`}>
-              {mensagem}
-            </p>
-          )}
-        </div>
+        {statusLeitura === 'erro' && (
+          <div className="text-center w-full max-w-sm animate-slide-up">
+            <div className="w-32 h-32 bg-red-50 rounded-full flex items-center justify-center mx-auto mb-6 border border-red-100 shadow-[0_10px_30px_rgba(239,68,68,0.15)]">
+              <XCircle className="w-16 h-16 text-red-500" />
+            </div>
+            <h2 className="text-3xl font-black text-red-500 mb-2 tracking-tight">Barrado!</h2>
+            <p className="text-zinc-700 font-bold bg-white p-5 rounded-2xl border border-zinc-200 shadow-sm">{resultado}</p>
+            <button onClick={resetarScanner} className="w-full mt-8 bg-zinc-100 hover:bg-zinc-200 text-zinc-600 font-black py-5 rounded-2xl uppercase tracking-widest flex items-center justify-center gap-2 transition active:scale-95">
+              <RefreshCw className="w-5 h-5"/> Tentar Novamente
+            </button>
+          </div>
+        )}
 
-      </div>
+      </main>
     </div>
   );
 }
