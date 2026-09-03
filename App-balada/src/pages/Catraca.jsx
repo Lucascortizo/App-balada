@@ -5,13 +5,20 @@ import { db } from '../services/firebase';
 import { Scanner } from '@yudiel/react-qr-scanner';
 import toast from 'react-hot-toast';
 import BottomNav from '../components/BottomNav';
-import { ScanLine, CheckCircle2, XCircle, ArrowLeft, ShieldCheck, RefreshCw } from 'lucide-react';
+import { ScanLine, CheckCircle2, XCircle, ShieldCheck, RefreshCw, Search } from 'lucide-react';
 
 export default function Catraca() {
   const navigate = useNavigate();
   const [eventosGlobais, setEventosGlobais] = useState([]);
   const [eventoSelecionado, setEventoSelecionado] = useState(null);
   
+  // ======== INÍCIO DAS VARIÁVEIS INJETADAS PARA A BUSCA MANUAL ========
+  const [abaAtiva, setAbaAtiva] = useState('scanner'); // 'scanner' ou 'busca'
+  const [termoBusca, setTermoBusca] = useState('');
+  const [ingressosBusca, setIngressosBusca] = useState([]);
+  const [isBuscando, setIsBuscando] = useState(false);
+  // ======== FIM DAS VARIÁVEIS INJETADAS ========
+
   // Controle do Scanner
   const [statusLeitura, setStatusLeitura] = useState('aguardando'); // 'aguardando', 'processando', 'sucesso', 'erro'
   const [resultado, setResultado] = useState(null);
@@ -154,6 +161,45 @@ export default function Catraca() {
     setResultado(null);
   };
 
+  // ======== INÍCIO DA LÓGICA INJETADA (FUNÇÕES DE BUSCA DA HOSTESS) ========
+  const buscarIngressoManual = async (e) => {
+    e.preventDefault();
+    if (!termoBusca) return;
+    setIsBuscando(true);
+    
+    try {
+      // Como você não tinha índice pra donoNome, puxamos os da festa e filtramos no app
+      const q = query(collection(db, "ingressos_vendidos"), where("eventoId", "==", eventoSelecionado.id));
+      const snap = await getDocs(q);
+      
+      const resultados = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(ing => 
+        ing.donoNome.toLowerCase().includes(termoBusca.toLowerCase())
+      );
+
+      if (resultados.length === 0) {
+        toast.error("Nenhum ingresso encontrado para esse nome nesta festa.");
+      }
+      setIngressosBusca(resultados);
+    } catch (error) {
+      toast.error("Erro ao buscar a lista.");
+    }
+    setIsBuscando(false);
+  };
+
+  const darBaixaManual = async (ingressoId) => {
+    if(!window.confirm("Liberar a entrada deste cliente manualmente? Ele não poderá usar o QR Code depois.")) return;
+    try {
+      await updateDoc(doc(db, "ingressos_vendidos", ingressoId), { status: 'usado', dataUso: new Date().toISOString() });
+      toast.success("ENTRADA LIBERADA!", { style: { background: '#10b981', color: '#fff' } });
+      
+      // Atualiza a listinha na tela pra ficar verdinha
+      setIngressosBusca(ingressosBusca.map(ing => ing.id === ingressoId ? { ...ing, status: 'usado' } : ing));
+    } catch (error) {
+      toast.error("Erro ao liberar cliente.");
+    }
+  };
+  // ======== FIM DA LÓGICA INJETADA ========
+
   if (!eventoSelecionado) {
     return (
       <div className="min-h-screen bg-[#FAFAFA] text-zinc-900 font-sans pb-32">
@@ -182,16 +228,23 @@ export default function Catraca() {
     <div className="min-h-screen bg-[#FAFAFA] text-zinc-900 font-sans pb-32 flex flex-col">
       <header className="flex justify-between items-center bg-white p-4 border-b border-zinc-200 shadow-sm z-10 rounded-b-2xl">
         <div>
-          <h1 className="text-lg font-black tracking-tight text-zinc-900 flex items-center gap-2"><ScanLine className="w-4 h-4 text-indigo-600"/> Scanner</h1>
+          <h1 className="text-lg font-black tracking-tight text-zinc-900 flex items-center gap-2"><ScanLine className="w-4 h-4 text-indigo-600"/> Portaria</h1>
           <p className="text-indigo-600 font-bold text-[10px] uppercase tracking-widest mt-0.5">{eventoSelecionado.nome}</p>
         </div>
-        <button onClick={() => setEventoSelecionado(null)} className="bg-zinc-100 text-zinc-600 px-4 py-2 rounded-xl text-xs font-black hover:bg-zinc-200 transition">Voltar</button>
+        <button onClick={() => { setEventoSelecionado(null); setIngressosBusca([]); }} className="bg-zinc-100 text-zinc-600 px-4 py-2 rounded-xl text-xs font-black hover:bg-zinc-200 transition">Sair</button>
       </header>
 
-      <main className="flex-1 flex flex-col items-center justify-center p-6">
+      {/* ======== INÍCIO DA INJEÇÃO DOS BOTÕES DE ABAS ======== */}
+      <div className="flex gap-2 px-6 mt-4 max-w-md mx-auto w-full">
+        <button onClick={() => { setAbaAtiva('scanner'); resetarScanner(); }} className={`flex-1 py-3 rounded-2xl text-xs font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${abaAtiva === 'scanner' ? 'bg-indigo-600 text-white shadow-md' : 'bg-white text-zinc-500 border border-zinc-200'}`}><ScanLine className="w-4 h-4"/> Leitor QR</button>
+        <button onClick={() => setAbaAtiva('busca')} className={`flex-1 py-3 rounded-2xl text-xs font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${abaAtiva === 'busca' ? 'bg-indigo-600 text-white shadow-md' : 'bg-white text-zinc-500 border border-zinc-200'}`}><Search className="w-4 h-4"/> Lista Manual</button>
+      </div>
+      {/* ======== FIM DA INJEÇÃO DOS BOTÕES ======== */}
+
+      <main className="flex-1 flex flex-col items-center justify-start p-6 max-w-md mx-auto w-full animate-fade-in">
         
-        {statusLeitura === 'aguardando' && (
-          <div className="w-full max-w-sm rounded-[2rem] overflow-hidden border-4 border-white shadow-2xl relative bg-black aspect-square flex items-center justify-center">
+        {abaAtiva === 'scanner' && statusLeitura === 'aguardando' && (
+          <div className="w-full max-w-sm mt-4 rounded-[2rem] overflow-hidden border-4 border-white shadow-2xl relative bg-black aspect-square flex items-center justify-center">
             <Scanner 
               onScan={(result) => validarQRCode(result[0].rawValue)} 
               formats={['qr_code']}
@@ -206,15 +259,15 @@ export default function Catraca() {
           </div>
         )}
 
-        {statusLeitura === 'processando' && (
-          <div className="text-center animate-pulse">
+        {abaAtiva === 'scanner' && statusLeitura === 'processando' && (
+          <div className="text-center animate-pulse mt-20">
             <div className="w-20 h-20 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
             <p className="font-black text-zinc-400 uppercase tracking-widest">Validando Servidor...</p>
           </div>
         )}
 
-        {statusLeitura === 'sucesso' && (
-          <div className="text-center w-full max-w-sm animate-slide-up">
+        {abaAtiva === 'scanner' && statusLeitura === 'sucesso' && (
+          <div className="text-center w-full max-w-sm mt-10 animate-slide-up">
             <div className="w-32 h-32 bg-emerald-50 rounded-full flex items-center justify-center mx-auto mb-6 border border-emerald-100 shadow-[0_10px_30px_rgba(16,185,129,0.15)]">
               <CheckCircle2 className="w-16 h-16 text-emerald-500" />
             </div>
@@ -226,8 +279,8 @@ export default function Catraca() {
           </div>
         )}
 
-        {statusLeitura === 'erro' && (
-          <div className="text-center w-full max-w-sm animate-slide-up">
+        {abaAtiva === 'scanner' && statusLeitura === 'erro' && (
+          <div className="text-center w-full max-w-sm mt-10 animate-slide-up">
             <div className="w-32 h-32 bg-red-50 rounded-full flex items-center justify-center mx-auto mb-6 border border-red-100 shadow-[0_10px_30px_rgba(239,68,68,0.15)]">
               <XCircle className="w-16 h-16 text-red-500" />
             </div>
@@ -239,7 +292,41 @@ export default function Catraca() {
           </div>
         )}
 
+        {/* ======== INÍCIO DA INJEÇÃO DA TELA DE BUSCA DA HOSTESS ======== */}
+        {abaAtiva === 'busca' && (
+          <div className="w-full bg-white p-8 rounded-[2rem] border border-zinc-200 shadow-sm mt-4 animate-fade-in">
+            <h2 className="text-xl font-black mb-1">Lista Hostess</h2>
+            <p className="text-sm text-zinc-500 font-medium mb-6">Busque clientes que estão sem celular ou bateria.</p>
+            
+            <form onSubmit={buscarIngressoManual} className="flex gap-2 mb-6">
+              <input type="text" required placeholder="Nome do cliente..." value={termoBusca} onChange={e => setTermoBusca(e.target.value)} className="flex-1 bg-zinc-50 border border-zinc-200 focus:border-indigo-500 outline-none rounded-xl px-4 py-3 font-bold text-zinc-900 transition" />
+              <button type="submit" disabled={isBuscando} className="bg-indigo-600 text-white px-5 rounded-xl font-black flex items-center justify-center transition disabled:opacity-50"><Search className="w-5 h-5"/></button>
+            </form>
+
+            <div className="space-y-3">
+              {ingressosBusca.map(ing => (
+                <div key={ing.id} className="flex justify-between items-center bg-zinc-50 border border-zinc-100 p-4 rounded-2xl">
+                  <div>
+                    <p className="font-black text-sm text-zinc-900 truncate max-w-[150px]">{ing.donoNome}</p>
+                    <p className="text-[10px] text-zinc-400 font-bold uppercase tracking-widest">{ing.tipo}</p>
+                  </div>
+                  {ing.status === 'usado' ? (
+                    <span className="flex items-center gap-1 text-xs font-black text-zinc-400 bg-zinc-200/50 px-3 py-1.5 rounded-lg"><CheckCircle2 className="w-4 h-4"/> Entrou</span>
+                  ) : (
+                    <button onClick={() => darBaixaManual(ing.id)} className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-xl text-xs font-black transition active:scale-95">Liberar</button>
+                  )}
+                </div>
+              ))}
+              {ingressosBusca.length === 0 && !isBuscando && termoBusca && (
+                 <p className="text-center text-xs text-zinc-500 font-bold py-4">Nenhum resultado para "{termoBusca}".</p>
+              )}
+            </div>
+          </div>
+        )}
+        {/* ======== FIM DA INJEÇÃO DA TELA ======== */}
+
       </main>
+      <BottomNav />
     </div>
   );
 }

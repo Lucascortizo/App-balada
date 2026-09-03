@@ -34,7 +34,7 @@ export default function Caixa() {
       } else {
         const cliente = { id: snap.docs[0].id, ...snap.docs[0].data() };
         setClienteSelecionado(cliente);
-        await calcularDivida(cliente.id); // Agora espera o cálculo terminar!
+        await calcularDivida(cliente.id);
         toast.success("Cliente localizado!", { id: tId });
       }
     } catch (error) { 
@@ -47,32 +47,26 @@ export default function Caixa() {
     try {
       const evId = eventoSelecionado.id;
       
-      // Busca geral pelo evento (Para evitar o bloqueio de Índice Composto do Firebase)
-      const espacosSnap = await getDocs(query(collection(db, "espacos"), where("eventoId", "==", evId)));
-      const pedidosSnap = await getDocs(query(collection(db, "pedidos"), where("eventoId", "==", evId)));
-      const pagamentosSnap = await getDocs(query(collection(db, "pagamentos_comanda"), where("eventoId", "==", evId)));
-      const splitsSnap = await getDocs(query(collection(db, "cobrancas_split"), where("eventoId", "==", evId)));
+      // ======== INÍCIO DA LÓGICA OTMIZADA DE ESCALABILIDADE ========
+      // Agora o Firebase faz o trabalho pesado e traz SÓ o que é do cliente
+      // (Isso exige os Índices Compostos no Firestore que combinem eventoId + donoId/clienteId)
+      
+      const espacosSnap = await getDocs(query(collection(db, "espacos"), where("eventoId", "==", evId), where("donoId", "==", clienteId)));
+      const pedidosSnap = await getDocs(query(collection(db, "pedidos"), where("eventoId", "==", evId), where("clienteId", "==", clienteId)));
+      const pagamentosSnap = await getDocs(query(collection(db, "pagamentos_comanda"), where("eventoId", "==", evId), where("clienteId", "==", clienteId)));
+      
+      // As splits continuam buscando "deId" e "paraId"
+      const descSplitsSnap = await getDocs(query(collection(db, "cobrancas_split"), where("eventoId", "==", evId), where("deId", "==", clienteId), where("status", "==", "aceito")));
+      const adcSplitsSnap = await getDocs(query(collection(db, "cobrancas_split"), where("eventoId", "==", evId), where("paraId", "==", clienteId), where("status", "==", "aceito")));
 
-      // Filtra na memória do aplicativo pelo cliente específico
-      const tVIP = espacosSnap.docs
-        .filter(d => d.data().donoId === clienteId)
-        .reduce((a, d) => a + (d.data().consumacao || 0), 0);
+      // O cálculo no celular agora é ultra leve, pois os arrays têm no máximo 10 ou 20 itens, não milhares.
+      const tVIP = espacosSnap.docs.reduce((a, d) => a + (d.data().consumacao || 0), 0);
+      const tBar = pedidosSnap.docs.reduce((a, d) => a + (d.data().total || 0), 0);
+      const tPago = pagamentosSnap.docs.reduce((a, d) => a + (d.data().valorPago || 0), 0);
+      const descSplits = descSplitsSnap.docs.reduce((a, d) => a + (d.data().valor || 0), 0);
+      const adcSplits = adcSplitsSnap.docs.reduce((a, d) => a + (d.data().valor || 0), 0);
 
-      const tBar = pedidosSnap.docs
-        .filter(d => d.data().clienteId === clienteId)
-        .reduce((a, d) => a + (d.data().total || 0), 0);
-
-      const tPago = pagamentosSnap.docs
-        .filter(d => d.data().clienteId === clienteId)
-        .reduce((a, d) => a + (d.data().valorPago || 0), 0);
-
-      const descSplits = splitsSnap.docs
-        .filter(d => d.data().deId === clienteId && d.data().status === "aceito")
-        .reduce((a, d) => a + (d.data().valor || 0), 0);
-
-      const adcSplits = splitsSnap.docs
-        .filter(d => d.data().paraId === clienteId && d.data().status === "aceito")
-        .reduce((a, d) => a + (d.data().valor || 0), 0);
+      // ======== FIM DA LÓGICA OTIMIZADA ========
 
       const saldoDevedor = Math.max(0, tBar + adcSplits - tVIP - tPago - descSplits);
       

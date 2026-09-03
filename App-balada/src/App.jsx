@@ -3,10 +3,6 @@ import { useContext } from 'react';
 import { AuthProvider, AuthContext } from './contexts/AuthContext';
 import { Toaster } from 'react-hot-toast';
 
-// Importe o seu CSS global aqui, se você usar (descomente se necessário)
-// import './App.css';
-// import './index.css';
-
 import Login from './pages/Login';
 import Home from './pages/Home';
 import Cardapio from './pages/Cardapio';
@@ -35,12 +31,20 @@ const RotaProtegida = ({ children, cargosPermitidos }) => {
   if (!user) return <Navigate to="/login" replace />;
 
   const temPermissao = user.role === 'admin' || cargosPermitidos.includes(user.role);
-  if (!temPermissao) return <Navigate to="/" replace />; 
+  
+  // Se não tem permissão, joga o funcionário direto de volta pro painel de trabalho dele
+  if (!temPermissao) {
+    if (user.role === 'garcom') return <Navigate to="/garcom" replace />;
+    if (user.role === 'barman') return <Navigate to="/bar" replace />;
+    if (user.role === 'seguranca') return <Navigate to="/catraca" replace />;
+    if (user.role === 'caixa') return <Navigate to="/caixa" replace />;
+    return <Navigate to="/home" replace />; 
+  }
   
   return children;
 };
 
-// ================= 2. DESVIADOR DE EQUIPE (TIRA FUNCIONÁRIOS DA VITRINE) =================
+// ================= 2. DESVIADOR DE EQUIPE (TIRA FUNCIONÁRIOS DA VITRINE PÚBLICA) =================
 const RotaClienteOuAdmin = ({ children }) => {
   const { user, loading } = useContext(AuthContext);
   
@@ -52,6 +56,7 @@ const RotaClienteOuAdmin = ({ children }) => {
     );
   }
   
+  // Impede que funcionários vejam as telas de Home e Cardápio do Cliente
   if (user) {
     if (user.role === 'garcom') return <Navigate to="/garcom" replace />;
     if (user.role === 'barman') return <Navigate to="/bar" replace />;
@@ -67,7 +72,6 @@ export default function App() {
     <div className="w-full min-h-screen bg-[#FAFAFA] font-sans antialiased text-zinc-900">
       <AuthProvider>
         <BrowserRouter>
-          {/* Configuração global dos Toasts (Notificações) para ficarem profissionais */}
           <Toaster 
             position="top-center" 
             reverseOrder={false} 
