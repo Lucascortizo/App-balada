@@ -1,10 +1,10 @@
 import { useState, useEffect, useContext } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { collection, onSnapshot, query, where, doc, runTransaction } from 'firebase/firestore';
+import { collection, onSnapshot, query, where, doc, runTransaction, getDocs } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import { AuthContext } from '../contexts/AuthContext';
 import toast from 'react-hot-toast';
-import { ArrowLeft, AlertTriangle, Wine, LogIn, Minus, Plus } from 'lucide-react';
+import { ArrowLeft, AlertTriangle, Wine, LogIn, Minus, Plus, ShieldAlert } from 'lucide-react';
 
 export default function Cardapio() {
   const { user } = useContext(AuthContext);
@@ -21,8 +21,53 @@ export default function Cardapio() {
   const [meusEspacos, setMeusEspacos] = useState([]);
   const [destinoSelecionado, setDestinoSelecionado] = useState('');
 
+  // Estados da Trava de Entrada (Check-in obrigatório)
+  const [verificandoAcesso, setVerificandoAcesso] = useState(true);
+  const [temAcesso, setTemAcesso] = useState(false);
+
   useEffect(() => {
     if (!eventoId) return navigate('/home');
+
+    const validarAcessoNaPortaria = async () => {
+      if (!user) {
+        setVerificandoAcesso(false);
+        setTemAcesso(false);
+        return;
+      }
+
+      try {
+        // 1. Verifica se tem ingresso usado (check-in feito na portaria)
+        const qIngressos = query(
+          collection(db, 'ingressos_vendidos'),
+          where('eventoId', '==', eventoId),
+          where('donoId', '==', user.uid),
+          where('status', '==', 'usado')
+        );
+        const snapIngressos = await getDocs(qIngressos);
+
+        // 2. Verifica se tem camarote/mesa com checkin ou reserva ativa
+        const qEspacosDono = query(
+          collection(db, 'espacos'),
+          where('eventoId', '==', eventoId),
+          where('donoId', '==', user.uid),
+          where('status', '==', 'reservado')
+        );
+        const snapEspacos = await getDocs(qEspacosDono);
+
+        if (!snapIngressos.empty || !snapEspacos.empty) {
+          setTemAcesso(true);
+        } else {
+          setTemAcesso(false);
+        }
+      } catch (e) {
+        console.error("Erro ao validar acesso:", e);
+        setTemAcesso(false);
+      } finally {
+        setVerificandoAcesso(false);
+      }
+    };
+
+    validarAcessoNaPortaria();
 
     const unsubCardapio = onSnapshot(collection(db, 'cardapio'), (snap) =>
       setProdutos(snap.docs.map((d) => ({ id: d.id, ...d.data() })))
@@ -50,7 +95,6 @@ export default function Cardapio() {
     const atual = carrinho[produtoId] || 0;
     const novo = Math.max(0, atual + delta);
     
-    // Pequena trava de segurança no front-end para o cliente não colocar mais no carrinho do que a loja diz ter
     const prod = produtos.find(p => p.id === produtoId);
     if (prod && novo > prod.estoque) {
       toast.error(`Apenas ${prod.estoque} unidades disponíveis.`);
@@ -99,11 +143,7 @@ export default function Cardapio() {
         mesaSigla = espaco ? espaco.sigla : null;
       }
 
-      // ======== INÍCIO DA LÓGICA DE TRANSAÇÃO (RACE CONDITION) ========
-      // A transação "trava" os itens no banco enquanto checa o estoque
       await runTransaction(db, async (transaction) => {
-        
-        // 1. Ler o estoque ATUAL e REAL de todas as bebidas do carrinho lá do servidor
         const leiturasEstoque = [];
         for (const [pId, qtdDesejada] of Object.entries(carrinho)) {
           const docRef = doc(db, 'cardapio', pId);
@@ -119,18 +159,15 @@ export default function Cardapio() {
           leiturasEstoque.push({ ref: docRef, estoqueAtual: estoqueReal, subtracao: qtdDesejada });
         }
 
-        // 2. Se chegou aqui, quer dizer que tem bebida para todo mundo. Vamos subtrair.
         for (const item of leiturasEstoque) {
           transaction.update(item.ref, { estoque: item.estoqueAtual - item.subtracao });
         }
 
-        // 3. Montar a notinha do pedido
         const itensFormatados = Object.entries(carrinho).map(([pId, qtd]) => {
           const prod = produtos.find((p) => p.id === pId);
           return { produtoId: pId, nome: prod.nome, precoUnitario: prod.preco, quantidade: qtd };
         });
 
-        // 4. Salvar o pedido (usando .set em vez de addDoc porque transação precisa de ID de doc vazio)
         const novoPedidoRef = doc(collection(db, 'pedidos'));
         transaction.set(novoPedidoRef, {
           eventoId,
@@ -145,7 +182,6 @@ export default function Cardapio() {
           data: new Date().toISOString(),
         });
       });
-      // ======== FIM DA LÓGICA DE TRANSAÇÃO ========
 
       toast.success('Pedido recebido pela cozinha!', { id: toastId });
       setCarrinho({});
@@ -153,18 +189,60 @@ export default function Cardapio() {
       navigate('/minha-conta');
       
     } catch (e) {
-      // Se a transação abortar (falta de bebida ou erro de rede), o catch captura o erro
       toast.error(e.message || 'Erro ao processar pedido.', { id: toastId });
     } finally {
       setIsSubmitting(false);
     }
   };
 
+  if (verificandoAcesso) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#FAFAFA]">
+        <div className="h-10 w-10 animate-spin rounded-full border-4 border-indigo-600 border-t-transparent" />
+      </div>
+    );
+  }
+
+  // TELA DE BLOQUEIO: Se o usuário não fez check-in na portaria
+  if (!temAcesso) {
+    return (
+      <div className="min-h-screen bg-[#FAFAFA] flex flex-col justify-between p-6 text-zinc-900">
+        <header className="flex items-center">
+          <button onClick={() => navigate(-1)} className="rounded-full bg-zinc-100 p-2 transition hover:bg-zinc-200">
+            <ArrowLeft className="h-5 w-5" />
+          </button>
+        </header>
+
+        <main className="mx-auto max-w-sm text-center py-10">
+          <div className="w-20 h-20 bg-amber-50 rounded-full flex items-center justify-center mx-auto mb-6 border-8 border-amber-100/50">
+            <ShieldAlert className="w-10 h-10 text-amber-600" />
+          </div>
+          <h1 className="text-2xl font-black !text-zinc-900 mb-3 tracking-tight">Acesso ao Bar Bloqueado</h1>
+          <p className="text-sm font-medium text-zinc-500 leading-relaxed mb-8">
+            {!user 
+              ? 'Você precisa estar logado e ter feito o check-in na portaria do evento para acessar o cardápio.'
+              : 'O cardápio digital só é liberado após a leitura do seu QR Code de entrada (check-in) na portaria do evento.'}
+          </p>
+          {!user ? (
+            <button onClick={() => navigate('/login', { state: { returnTo: '/cardapio', eventoId } })} className="w-full rounded-2xl bg-indigo-600 py-4 font-black text-white shadow-md transition hover:bg-indigo-700">
+              Fazer Login
+            </button>
+          ) : (
+            <button onClick={() => navigate('/minha-conta')} className="w-full rounded-2xl bg-zinc-900 py-4 font-black text-white shadow-md transition hover:bg-zinc-800">
+              Ver Meus Ingressos
+            </button>
+          )}
+        </main>
+
+        <div />
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#FAFAFA] pb-32 text-zinc-900">
       <style>{`.hide-scrollbar::-webkit-scrollbar { display: none; } .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }`}</style>
 
-      {/* Header Premium (Fixo com Blur) */}
       <header className="sticky top-0 z-40 border-b border-zinc-200 bg-white/95 backdrop-blur-md">
         <div className="flex items-center justify-between px-6 py-4">
           <button onClick={() => navigate(-1)} className="rounded-full bg-zinc-100 p-2 transition hover:bg-zinc-200">
@@ -173,7 +251,6 @@ export default function Cardapio() {
           <h1 className="text-xl font-semibold tracking-tight">Cardápio</h1>
           <div className="w-9" />
         </div>
-        {/* Menu de Categorias Deslizante */}
         <div className="hide-scrollbar flex gap-2 overflow-x-auto px-6 pb-4">
           {categorias.map((cat) => (
             <button
@@ -192,18 +269,6 @@ export default function Cardapio() {
       </header>
 
       <main className="mx-auto max-w-xl space-y-4 p-6">
-        {!user && (
-          <div className="mb-4 flex items-center justify-between rounded-3xl border border-indigo-100 bg-indigo-50/50 p-5 shadow-sm">
-            <div>
-              <p className="text-sm font-semibold text-indigo-900">Modo Visitante</p>
-              <p className="text-xs font-medium text-indigo-600 mt-0.5">Faça login para pedir</p>
-            </div>
-            <button onClick={() => navigate('/login', { state: { returnTo: '/cardapio', eventoId } })} className="flex items-center gap-1.5 rounded-full bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700">
-              <LogIn className="h-4 w-4" /> Entrar
-            </button>
-          </div>
-        )}
-
         {produtosFiltrados.length === 0 && (
           <div className="py-16 text-center">
             <Wine className="mx-auto h-10 w-10 text-zinc-300 mb-3" strokeWidth={1.5} />
@@ -211,7 +276,6 @@ export default function Cardapio() {
           </div>
         )}
 
-        {/* Lista de Produtos (Cards Premium) */}
         {produtosFiltrados.map((produto) => (
           <div key={produto.id} className="flex items-center gap-4 rounded-3xl border border-zinc-200 bg-white p-4 shadow-sm transition hover:border-indigo-100 hover:shadow-md">
             <div className="relative flex h-24 w-24 flex-shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-zinc-100 bg-zinc-50">
@@ -237,7 +301,6 @@ export default function Cardapio() {
         ))}
       </main>
 
-      {/* Barra de Checkout (Fixa no rodapé) */}
       {Object.keys(carrinho).length > 0 && (
         <div className="fixed bottom-0 left-0 right-0 z-50 border-t border-zinc-200 bg-white/95 p-6 backdrop-blur-md pb-safe shadow-[0_-10px_40px_rgba(0,0,0,0.05)]">
           <div className="mx-auto max-w-xl">
@@ -245,14 +308,13 @@ export default function Cardapio() {
               onClick={abrirCheckout}
               className="flex w-full items-center justify-between rounded-full bg-indigo-600 px-8 py-4 font-semibold text-white shadow-lg transition hover:bg-indigo-700 active:scale-95"
             >
-              <span className="text-base">{user ? 'Finalizar pedido' : 'Entrar para pedir'}</span>
+              <span className="text-base">Finalizar pedido</span>
               <span className="text-lg">R$ {calcularTotal().toFixed(2)}</span>
             </button>
           </div>
         </div>
       )}
 
-      {/* Modal de Confirmação de Entrega */}
       {modalCheckout && user && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-zinc-900/60 p-0 backdrop-blur-sm transition-all sm:items-center sm:p-4">
           <div className="w-full max-w-md rounded-t-[2.5rem] bg-white p-8 shadow-2xl sm:rounded-3xl animate-in slide-in-from-bottom-10">
