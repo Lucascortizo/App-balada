@@ -302,7 +302,7 @@ export default function Cardapio() {
       </main>
 
       {Object.keys(carrinho).length > 0 && (
-        <div className="fixed bottom-0 left-0 right-0 z-50 border-t border-zinc-200 bg-white/95 p-6 backdrop-blur-md pb-safe shadow-[0_-10px_40px_rgba(0,0,0,0.05)]">
+        <div className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-xl z-50 border-t border-zinc-200 bg-white/95 p-6 backdrop-blur-md pb-safe shadow-[0_-10px_40px_rgba(0,0,0,0.05)]">
           <div className="mx-auto max-w-xl">
             <button
               onClick={abrirCheckout}

@@ -55,7 +55,7 @@ export default function BottomNav() {
   return (
     <nav
       aria-label="Navegação principal"
-      className="fixed bottom-0 left-0 right-0 z-50 border-t border-zinc-200 bg-white/95 backdrop-blur-sm pb-safe"
+      className="fixed bottom-0 left-0 right-0 w-full z-50 border-t border-zinc-200 bg-white/95 backdrop-blur-md"
     >
       <div className="mx-auto flex max-w-md justify-around px-2 py-2.5">
         {menu.map((item) => {

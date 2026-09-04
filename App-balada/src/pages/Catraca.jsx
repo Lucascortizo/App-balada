@@ -54,7 +54,7 @@ export default function Catraca() {
         if (!snap.exists()) return lancarResultado('erro', 'Ingresso não encontrado no banco.');
         
         const ingresso = snap.data();
-        if (ingresso.status === 'usado') {
+        if (ingresso.status === 'usado' || ingresso.status === 'saiu') {
           toast.error('Ingresso já foi utilizado!');
           return lancarResultado('erro', `Barrado! Já utilizado por ${ingresso.donoNome}.`);
         }
@@ -138,8 +138,27 @@ export default function Catraca() {
           return lancarResultado('erro', `BARRADO! Cliente possui R$ ${saldoDevedor.toFixed(2)} em aberto.`);
         }
 
+        // ====== A MAGIA ACONTECE AQUI: Atualizando os status para que a comanda vá pro Histórico ======
+        
+        // 1. Atualizar todos os Ingressos (Pista) do cliente para "saiu"
+        const ingressosSnap = await getDocs(query(collection(db, "ingressos_vendidos"), where("eventoId", "==", eventoId), where("donoId", "==", clienteId)));
+        if (!ingressosSnap.empty) {
+          const promisesIngressos = ingressosSnap.docs.map(docSnap => 
+            updateDoc(doc(db, "ingressos_vendidos", docSnap.id), { status: 'saiu' })
+          );
+          await Promise.all(promisesIngressos);
+        }
+
+        // 2. Se for Dono de Camarote, dar baixa no espaço para ele não voltar e entrar de novo amanhã
+        if (!espacosSnap.empty) {
+          const promisesEspacos = espacosSnap.docs.map(docSnap => 
+            updateDoc(doc(db, "espacos", docSnap.id), { checkinFeito: false, status: 'disponivel', donoId: null, donoNome: null })
+          );
+          await Promise.all(promisesEspacos);
+        }
+
         toast.success('Saída Liberada!');
-        return lancarResultado('sucesso', 'Comanda Zerada. Pode liberar a catraca de saída!');
+        return lancarResultado('sucesso', 'Comanda Zerada e Baixa Efetuada. Pode liberar a catraca de saída!');
       }
 
       toast.error('Formato não reconhecido');
@@ -168,7 +187,6 @@ export default function Catraca() {
     setIsBuscando(true);
     
     try {
-      // Como você não tinha índice pra donoNome, puxamos os da festa e filtramos no app
       const q = query(collection(db, "ingressos_vendidos"), where("eventoId", "==", eventoSelecionado.id));
       const snap = await getDocs(q);
       
@@ -310,7 +328,7 @@ export default function Catraca() {
                     <p className="font-black text-sm text-zinc-900 truncate max-w-[150px]">{ing.donoNome}</p>
                     <p className="text-[10px] text-zinc-400 font-bold uppercase tracking-widest">{ing.tipo}</p>
                   </div>
-                  {ing.status === 'usado' ? (
+                  {ing.status === 'usado' || ing.status === 'saiu' ? (
                     <span className="flex items-center gap-1 text-xs font-black text-zinc-400 bg-zinc-200/50 px-3 py-1.5 rounded-lg"><CheckCircle2 className="w-4 h-4"/> Entrou</span>
                   ) : (
                     <button onClick={() => darBaixaManual(ing.id)} className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-xl text-xs font-black transition active:scale-95">Liberar</button>
