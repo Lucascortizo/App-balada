@@ -1,249 +1,270 @@
 import { useState, useEffect, useContext } from 'react';
-import { collection, query, where, onSnapshot } from 'firebase/firestore';
+import { useNavigate, useLocation } from 'react-router-dom';
+import { collection, query, where, onSnapshot, doc, getDoc, runTransaction, addDoc } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import { AuthContext } from '../contexts/AuthContext';
-import QRCode from 'react-qr-code';
-import BottomNav from '../components/BottomNav';
-import { Ticket, MapPin, CalendarDays, QrCode, X, Clock, CheckCircle2, Crown } from 'lucide-react';
+import toast from 'react-hot-toast';
+import { ArrowLeft, MapPin, Clock, AlertCircle, Map as MapIcon, ChevronDown, ChevronUp, Ticket } from 'lucide-react';
 
 export default function Ingressos() {
+  const [evento, setEvento] = useState(null);
+  const [espacos, setEspacos] = useState([]);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [mapaAberto, setMapaAberto] = useState(false);
+
   const { user } = useContext(AuthContext);
-  
-  const [eventosGlobais, setEventosGlobais] = useState([]);
-  const [ingressos, setIngressos] = useState([]);
-  const [espacos, setEspacos] = useState([]); // Camarotes/Mesas VIP
-  
-  const [abaAtiva, setAbaAtiva] = useState('ativos'); // 'ativos' ou 'historico'
-  const [qrModal, setQrModal] = useState(null);
+  const navigate = useNavigate();
+  const location = useLocation();
+  const eventoId = location.state?.eventoId;
 
   useEffect(() => {
-    if (!user) return;
-    
-    // Busca os eventos
-    const unsubEv = onSnapshot(collection(db, "eventos"), snap => {
-      setEventosGlobais(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    if (!eventoId) return navigate('/home');
+    getDoc(doc(db, 'eventos', eventoId)).then((snap) => {
+      if (snap.exists()) setEvento({ id: snap.id, ...snap.data() });
     });
-    
-    // Busca Ingressos normais (Pista)
-    const unsubIng = onSnapshot(query(collection(db, "ingressos_vendidos"), where("donoId", "==", user.uid)), snap => {
-      setIngressos(snap.docs.map(d => ({ id: d.id, tipoAcesso: 'ingresso', ...d.data() })));
+    const unsub = onSnapshot(query(collection(db, 'espacos'), where('eventoId', '==', eventoId)), (snap) => {
+      setEspacos(snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((e) => e.status === 'disponivel'));
     });
+    return () => unsub();
+  }, [navigate, eventoId]);
 
-    // Busca Camarotes/Mesas VIP (Titular)
-    const unsubEsp = onSnapshot(query(collection(db, "espacos"), where("donoId", "==", user.uid)), snap => {
-      setEspacos(snap.docs.map(d => ({ id: d.id, tipoAcesso: 'espaco', ...d.data() })));
-    });
+  const espacosAgrupados = espacos.reduce((acc, espaco) => {
+    const nomeSetor = espaco.tipo || 'Outros';
+    if (!acc[nomeSetor]) acc[nomeSetor] = [];
+    acc[nomeSetor].push(espaco);
+    return acc;
+  }, {});
 
-    return () => { unsubEv(); unsubIng(); unsubEsp(); };
-  }, [user]);
+  const ingressosDoEvento = evento?.ingressos || (evento?.precoPista ? [{
+    id: 'pista-legado',
+    nome: 'Pista',
+    tipoPreco: evento.tipoPreco || 'unico',
+    preco: evento.precoPista,
+    precoMasc: evento.precoPistaMasc,
+    precoFem: evento.precoPistaFem,
+    consumacao: 0
+  }] : []);
 
-  // ================= LÓGICA DE TRATAMENTO DE DADOS =================
-  // Junta Ingressos e Espaços em uma lista só
-  const todosAcessos = [...ingressos, ...espacos];
+  const comprarIngresso = async (ingressoSelecionado, varianteGenero = null) => {
+    if (!user) return navigate('/login', { state: { returnTo: '/ingressos', eventoId: eventoId } });
 
-  const acessosProcessados = todosAcessos.map(item => {
-    // RESOLVENDO O BUG DOS FANTASMAS: Acha o evento. Se o Admin deletou a festa, isso retorna null.
-    const festa = eventosGlobais.find(e => e.id === item.eventoId);
-    if (!festa) return null; // Ignora ingressos de festas apagadas
-
-    // Verifica se a festa já passou (mais de 24h da data oficial)
-    const eventoPassou = (Date.now() - new Date(festa.data).getTime()) > (24 * 60 * 60 * 1000);
+    setIsSubmitting(true);
+    const toastId = toast.loading('Processando compra...');
     
-    // Verifica se ele já usou tudo e foi embora
-    const jaSaiu = item.status === 'saiu' || item.status === 'encerrado';
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+
+      const precoFinal = varianteGenero === 'Masculino' 
+        ? ingressoSelecionado.precoMasc 
+        : (varianteGenero === 'Feminino' ? ingressoSelecionado.precoFem : ingressoSelecionado.preco);
+        
+      const tipoFinal = varianteGenero ? `${ingressoSelecionado.nome} - ${varianteGenero}` : ingressoSelecionado.nome;
+
+      await addDoc(collection(db, 'ingressos_vendidos'), {
+        eventoId: evento.id,
+        eventoNome: evento.nome,
+        tipo: tipoFinal,
+        preco: precoFinal,
+        consumacao: Number(ingressoSelecionado.consumacao) || 0,
+        donoId: user.uid,
+        donoNome: user?.nome || user?.email,
+        dataCompra: new Date().toISOString(),
+        status: 'valido',
+      });
+
+      toast.success('Ingresso garantido com sucesso!', { id: toastId });
+      // Mantém o usuário na página para ele comprar mais se quiser
+    } catch (e) {
+      toast.error('Erro ao processar a compra.', { id: toastId });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const reservarEspaco = async (espaco) => {
+    if (!user) return navigate('/login', { state: { returnTo: '/ingressos', eventoId: eventoId } });
+    if (!window.confirm(`Reservar o espaço ${espaco.sigla} por R$ ${espaco.preco.toFixed(2)}?`)) return;
+
+    setIsSubmitting(true);
+    const toastId = toast.loading('Processando reserva...');
     
-    // Vai para o Histórico se a festa acabou OU se ele já bateu o passe de saída
-    const isHistorico = eventoPassou || jaSaiu;
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      await runTransaction(db, async (t) => {
+        const ref = doc(db, 'espacos', espaco.id);
+        const snap = await t.get(ref);
+        if (!snap.exists() || snap.data().status !== 'disponivel') throw new Error('indisponivel');
+        t.update(ref, {
+          status: 'reservado',
+          donoId: user.uid,
+          donoNome: user?.nome || user?.email,
+          dataReserva: new Date().toISOString(),
+          checkinFeito: false,
+        });
+      });
+      
+      toast.success(`${espaco.sigla} reservado com sucesso!`, { id: toastId });
+      // Mantém o usuário na página
+    } catch (e) {
+      toast.error('Este espaço acabou de ser reservado por outra pessoa.', { id: toastId });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
-    return { ...item, festa, isHistorico };
-  }).filter(item => item !== null); // Remove os fantasmas nulos da lista
-
-  // Separa as listas para as abas
-  const acessosAtivos = acessosProcessados.filter(i => !i.isHistorico).sort((a, b) => new Date(a.festa.data) - new Date(b.festa.data));
-  const acessosHistorico = acessosProcessados.filter(i => i.isHistorico).sort((a, b) => new Date(b.festa.data) - new Date(a.festa.data));
-
-  const listaExibida = abaAtiva === 'ativos' ? acessosAtivos : acessosHistorico;
-
-  if (!user) return <div className="min-h-screen flex items-center justify-center"><div className="animate-spin h-10 w-10 border-4 border-indigo-600 border-t-transparent rounded-full"></div></div>;
+  if (!evento) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#FAFAFA]">
+        <div className="h-10 w-10 animate-spin rounded-full border-4 border-indigo-600 border-t-transparent" />
+      </div>
+    );
+  }
 
   return (
-    <div className="min-h-screen bg-[#FAFAFA] text-zinc-900 pb-32">
-      <header className="pt-10 pb-6 px-6 max-w-md mx-auto">
-        <h1 className="text-3xl font-black tracking-tight !text-zinc-900">Meus Ingressos</h1>
-      </header>
+    <div className="min-h-screen bg-[#FAFAFA] pb-32 text-zinc-900">
+      <div className="relative h-72 w-full">
+        <img src={evento.linkImagem} alt="" className="h-full w-full object-cover" />
+        <div className="absolute inset-0 bg-gradient-to-t from-[#FAFAFA] via-transparent to-black/40" />
+        <button onClick={() => navigate(-1)} className="absolute left-6 top-6 rounded-full bg-white/90 p-3 text-zinc-900 shadow-sm backdrop-blur-md transition hover:bg-white">
+          <ArrowLeft className="h-5 w-5" />
+        </button>
+      </div>
 
-      <main className="px-6 max-w-md mx-auto space-y-6">
-        
-        {/* ================= ABAS DE NAVEGAÇÃO ================= */}
-        <div className="flex bg-zinc-100 p-1.5 rounded-2xl shadow-inner">
-          <button 
-            onClick={() => setAbaAtiva('ativos')} 
-            className={`flex-1 py-3 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${abaAtiva === 'ativos' ? 'bg-white shadow-sm text-indigo-600' : 'text-zinc-500 hover:text-zinc-700'}`}
-          >
-            Disponíveis
-          </button>
-          <button 
-            onClick={() => setAbaAtiva('historico')} 
-            className={`flex-1 py-3 rounded-xl text-xs font-black uppercase tracking-widest transition-all flex items-center justify-center gap-1.5 ${abaAtiva === 'historico' ? 'bg-white shadow-sm text-indigo-600' : 'text-zinc-500 hover:text-zinc-700'}`}
-          >
-            <Clock className="w-3.5 h-3.5" /> Histórico
-          </button>
+      <div className="relative z-10 mx-auto -mt-14 max-w-3xl px-6">
+        <div className="mb-8 rounded-3xl border border-zinc-100 bg-white p-7 shadow-sm">
+          <p className="mb-1.5 text-sm font-medium text-indigo-600">{new Date(evento.data).toLocaleDateString('pt-BR')}</p>
+          <h1 className="mb-3 text-3xl font-black !text-zinc-900 tracking-tight">{evento.nome}</h1>
+          <p className="mb-7 text-sm leading-relaxed text-zinc-500 font-medium">{evento.descricao || 'Detalhes do evento em breve.'}</p>
+
+          <div className="grid grid-cols-1 gap-5 border-t border-zinc-100 pt-6 md:grid-cols-2">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-50 text-indigo-600"><MapPin className="h-5 w-5" /></div>
+              <div>
+                <p className="mb-0.5 text-xs font-black uppercase tracking-widest text-zinc-400">Local</p>
+                <p className="text-sm font-black !text-zinc-900">{evento.local || 'Não informado'}</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-50 text-indigo-600"><Clock className="h-5 w-5" /></div>
+              <div>
+                <p className="mb-0.5 text-xs font-black uppercase tracking-widest text-zinc-400">Abertura</p>
+                <p className="text-sm font-black !text-zinc-900">{new Date(evento.data).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3 md:col-span-2">
+              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl bg-zinc-100 text-zinc-500"><AlertCircle className="h-5 w-5" /></div>
+              <div>
+                <p className="mb-0.5 text-xs font-black uppercase tracking-widest text-zinc-400">Regras</p>
+                <p className="text-sm leading-relaxed font-bold text-zinc-600">{evento.regras || '+18 anos. Documento com foto.'}</p>
+              </div>
+            </div>
+          </div>
         </div>
 
-        {/* ================= ESTADO VAZIO ================= */}
-        {listaExibida.length === 0 ? (
-          <div className="text-center py-16 bg-white border border-dashed border-zinc-300 rounded-[2rem] shadow-sm animate-fade-in">
-            {abaAtiva === 'ativos' ? (
-              <>
-                <Ticket className="w-10 h-10 mx-auto mb-4 text-zinc-300" />
-                <h3 className="text-lg font-black text-zinc-800">Nenhum ingresso ativo</h3>
-                <p className="text-sm font-medium text-zinc-500 mt-1">Explore os próximos eventos e garanta o seu.</p>
-              </>
-            ) : (
-              <>
-                <Clock className="w-10 h-10 mx-auto mb-4 text-zinc-300" />
-                <h3 className="text-lg font-black text-zinc-800">Sem histórico</h3>
-                <p className="text-sm font-medium text-zinc-500 mt-1">Você ainda não curtiu nenhuma festa conosco.</p>
-              </>
+        {evento.linkMapa && (
+          <div className="mb-8 overflow-hidden rounded-3xl border border-zinc-100 bg-white p-2 shadow-sm transition-all">
+            <button onClick={() => setMapaAberto(!mapaAberto)} className="flex w-full items-center justify-between p-4 font-black !text-zinc-900 transition active:scale-95">
+              <span className="flex items-center gap-2"><MapIcon className="h-5 w-5 text-indigo-600"/> Ver Mapa do Evento</span>
+              {mapaAberto ? <ChevronUp className="h-5 w-5 text-zinc-400"/> : <ChevronDown className="h-5 w-5 text-zinc-400"/>}
+            </button>
+            {mapaAberto && (
+              <div className="px-4 pb-4 animate-in slide-in-from-top-2">
+                <img src={evento.linkMapa} alt="Mapa" className="w-full rounded-2xl border border-zinc-100 object-contain" />
+              </div>
             )}
           </div>
-        ) : (
-          
-          /* ================= LISTA DE INGRESSOS ================= */
-          <div className="space-y-6 animate-fade-in">
-            {listaExibida.map((acesso, index) => {
-              const isVIP = acesso.tipoAcesso === 'espaco';
-              const jaUsou = acesso.status === 'usado' || acesso.checkinFeito;
+        )}
 
-              return (
-                <div key={`${acesso.id}-${index}`} className={`rounded-[2.5rem] border shadow-sm overflow-hidden flex flex-col transition-all ${acesso.isHistorico ? 'bg-zinc-50 opacity-90 grayscale-[0.3]' : 'bg-white'}`}>
-                  
-                  {/* Capa e Título */}
-                  <div className="h-32 relative bg-zinc-900 flex-shrink-0">
-                    <img 
-                      src={acesso.festa.linkImagem || "https://images.unsplash.com/photo-1516450360452-9312f5e86fc7"} 
-                      className="w-full h-full object-cover opacity-60" 
-                    />
-                    <div className="absolute inset-0 bg-gradient-to-t from-zinc-900 to-transparent"></div>
-                    
-                    {acesso.isHistorico && (
-                      <span className="absolute top-4 right-4 bg-zinc-800/80 backdrop-blur-sm text-[10px] font-black uppercase tracking-widest px-2.5 py-1 rounded text-zinc-300 border border-zinc-600">
-                        Expirado / Usado
+        {ingressosDoEvento.length > 0 && (
+          <div className="mb-10 animate-fade-in">
+            <h2 className="mb-5 text-xl font-black tracking-tight !text-zinc-900 flex items-center gap-2">
+              <Ticket className="w-5 h-5 text-indigo-600"/> Ingressos Disponíveis
+            </h2>
+            <div className="space-y-4">
+              {ingressosDoEvento.map((ing) => (
+                <div key={ing.id} className="rounded-3xl border border-zinc-200 bg-white shadow-sm overflow-hidden">
+                  <div className="p-5 border-b border-zinc-100 bg-zinc-50/50 flex justify-between items-center">
+                    <div>
+                      <h3 className="text-xl font-black !text-zinc-900">{ing.nome}</h3>
+                      <p className="text-xs font-bold text-zinc-500 mt-1 uppercase tracking-widest">Acesso Padrão</p>
+                    </div>
+                    {Number(ing.consumacao) > 0 && (
+                      <span className="bg-emerald-50 border border-emerald-100 text-emerald-600 font-black text-[10px] px-2.5 py-1.5 rounded-lg uppercase tracking-widest text-right">
+                        Inclui R$ {Number(ing.consumacao).toFixed(2)}<br/>em Bônus Bar
                       </span>
                     )}
-
-                    <div className="absolute bottom-4 left-5 right-5">
-                      <h3 className="font-black text-xl text-white truncate">{acesso.festa.nome}</h3>
-                    </div>
                   </div>
-
-                  {/* Informações do Ingresso */}
-                  <div className="p-6">
-                    <div className="flex justify-between items-start mb-6 border-b border-zinc-100 pb-5">
+                  
+                  {ing.tipoPreco === 'unico' ? (
+                    <div className="p-5 flex items-center justify-between">
                       <div>
-                        <p className="text-[10px] text-zinc-400 font-black uppercase tracking-widest mb-1">Tipo de Acesso</p>
-                        {isVIP ? (
-                          <p className="font-black text-lg text-indigo-600 flex items-center gap-1.5"><Crown className="w-4 h-4"/> {acesso.sigla} ({acesso.tipo})</p>
-                        ) : (
-                          <p className="font-black text-lg !text-zinc-900 flex items-center gap-1.5"><Ticket className="w-4 h-4 text-zinc-400"/> Pista - {acesso.nome}</p>
-                        )}
-                        <p className="text-xs font-bold text-zinc-500 mt-1 uppercase">{acesso.donoNome}</p>
+                        <p className="text-[10px] font-black uppercase text-zinc-400 mb-1 tracking-widest">Lote Atual</p>
+                        <p className="text-2xl font-black !text-zinc-900">R$ {Number(ing.preco).toFixed(2)}</p>
                       </div>
-                      
-                      {!acesso.isHistorico && jaUsou && (
-                        <span className="bg-emerald-50 border border-emerald-100 text-emerald-600 text-[10px] uppercase font-black px-2.5 py-1.5 rounded-lg flex items-center gap-1">
-                          <CheckCircle2 className="w-3 h-3"/> Na Casa
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="space-y-3 mb-6">
-                      <div className="flex items-center gap-3">
-                        <div className="w-8 h-8 rounded-full bg-zinc-50 flex items-center justify-center flex-shrink-0">
-                          <CalendarDays className="w-4 h-4 text-indigo-500" />
-                        </div>
-                        <div>
-                          <p className="text-[10px] text-zinc-400 font-black uppercase tracking-widest">Data</p>
-                          <p className="text-sm font-bold !text-zinc-900">{new Date(acesso.festa.data).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}</p>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <div className="w-8 h-8 rounded-full bg-zinc-50 flex items-center justify-center flex-shrink-0">
-                          <MapPin className="w-4 h-4 text-indigo-500" />
-                        </div>
-                        <div>
-                          <p className="text-[10px] text-zinc-400 font-black uppercase tracking-widest">Local</p>
-                          <p className="text-sm font-bold !text-zinc-900">{acesso.festa.local || 'Local não informado'}</p>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Botão de QR Code (Só aparece se estiver Ativo) */}
-                    {!acesso.isHistorico && (
-                      <button 
-                        onClick={() => setQrModal(acesso)} 
-                        className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-black py-4 rounded-2xl flex items-center justify-center gap-2 uppercase tracking-widest text-xs transition-colors shadow-md active:scale-95"
-                      >
-                        <QrCode className="w-5 h-5"/> Exibir Ingresso
+                      <button onClick={() => comprarIngresso(ing)} disabled={isSubmitting} className="rounded-xl bg-indigo-600 px-8 py-3 text-sm font-black text-white transition hover:bg-indigo-700 disabled:opacity-50 active:scale-95 shadow-md">
+                        Comprar
                       </button>
-                    )}
-                  </div>
+                    </div>
+                  ) : (
+                    <div className="divide-y divide-zinc-100">
+                      <div className="p-5 flex items-center justify-between hover:bg-pink-50/30 transition">
+                        <div>
+                          <p className="text-[10px] font-black uppercase text-pink-500 mb-1 tracking-widest">Feminino</p>
+                          <p className="text-2xl font-black !text-zinc-900">R$ {Number(ing.precoFem).toFixed(2)}</p>
+                        </div>
+                        <button onClick={() => comprarIngresso(ing, 'Feminino')} disabled={isSubmitting} className="rounded-xl bg-zinc-900 px-6 py-3 text-sm font-black text-white transition hover:bg-zinc-800 disabled:opacity-50 active:scale-95">
+                          Comprar
+                        </button>
+                      </div>
+                      <div className="p-5 flex items-center justify-between hover:bg-blue-50/30 transition">
+                        <div>
+                          <p className="text-[10px] font-black uppercase text-blue-500 mb-1 tracking-widest">Masculino</p>
+                          <p className="text-2xl font-black !text-zinc-900">R$ {Number(ing.precoMasc).toFixed(2)}</p>
+                        </div>
+                        <button onClick={() => comprarIngresso(ing, 'Masculino')} disabled={isSubmitting} className="rounded-xl bg-zinc-900 px-6 py-3 text-sm font-black text-white transition hover:bg-zinc-800 disabled:opacity-50 active:scale-95">
+                          Comprar
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
-              );
-            })}
+              ))}
+            </div>
           </div>
         )}
-      </main>
 
-      {/* ================= MODAL DO QR CODE ================= */}
-      {qrModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/90 backdrop-blur-md p-6 animate-fade-in">
-          <div className="bg-white w-full max-w-sm rounded-[2.5rem] overflow-hidden shadow-2xl flex flex-col">
-            
-            <div className="bg-zinc-900 p-6 text-center relative">
-              <button onClick={() => setQrModal(null)} className="absolute top-6 right-6 text-zinc-400 hover:text-white transition">
-                <X className="w-5 h-5"/>
-              </button>
-              <h2 className="text-xl font-black text-white mb-1">{qrModal.festa.nome}</h2>
-              {qrModal.tipoAcesso === 'espaco' ? (
-                <p className="text-indigo-400 font-black text-sm flex items-center justify-center gap-1"><Crown className="w-4 h-4"/> {qrModal.sigla} VIP</p>
-              ) : (
-                <p className="text-zinc-400 font-bold text-sm uppercase tracking-widest">{qrModal.nome}</p>
-              )}
-            </div>
-
-            <div className="p-8 flex flex-col items-center bg-zinc-50 relative">
-              {/* Efeito de Ticket picotado */}
-              <div className="absolute top-0 left-0 w-full flex justify-between -mt-3 px-4 opacity-50">
-                {Array.from({ length: 12 }).map((_, i) => <div key={i} className="w-3 h-3 bg-zinc-900 rounded-full"></div>)}
+        {espacos.length > 0 && (
+          <div className="mb-10">
+            {Object.entries(espacosAgrupados).map(([nomeSetor, listaEspacos]) => (
+              <div key={nomeSetor} className="mb-8">
+                <h2 className="mb-4 text-xl font-black tracking-tight !text-zinc-900">Área VIP: {nomeSetor}</h2>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  {listaEspacos.map((espaco) => (
+                    <div key={espaco.id} className="flex flex-col justify-between rounded-3xl border border-zinc-200 bg-white p-6 transition hover:border-indigo-200 shadow-sm">
+                      <div className="mb-5 flex items-start justify-between">
+                        <div>
+                          <p className="mb-0.5 text-xs font-bold text-indigo-600 uppercase tracking-widest">{espaco.tipo}</p>
+                          <h3 className="text-2xl font-black !text-zinc-900">{espaco.sigla}</h3>
+                        </div>
+                        <span className="rounded-full bg-zinc-100 px-3 py-1 text-xs font-black !text-zinc-600">Até {espaco.capacidade}p</span>
+                      </div>
+                      <div className="mt-2 flex items-end justify-between border-t border-zinc-100 pt-4">
+                        <div>
+                          <p className="mb-0.5 text-[10px] font-black uppercase tracking-widest text-emerald-500">Consome R$ {(espaco.consumacao || 0).toFixed(2)}</p>
+                          <p className="text-2xl font-black !text-zinc-900">R$ {(espaco.preco || 0).toFixed(2)}</p>
+                        </div>
+                        <button onClick={() => reservarEspaco(espaco)} disabled={isSubmitting} className="rounded-xl bg-zinc-900 px-5 py-2.5 text-sm font-black text-white transition hover:bg-zinc-800 disabled:opacity-50 active:scale-95">
+                          Reservar
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
-
-              <p className="text-[10px] font-black uppercase text-zinc-400 tracking-widest mb-6">Apresente na Portaria</p>
-              
-              <div className="bg-white p-4 rounded-3xl border border-zinc-200 shadow-sm mb-8">
-                <QRCode 
-                  value={`${qrModal.tipoAcesso}|${qrModal.id}|${user.uid}`} 
-                  size={200} 
-                  level="H"
-                />
-              </div>
-
-              <div className="w-full text-center border-t border-zinc-200 pt-6">
-                <p className="text-xs font-bold text-zinc-500 uppercase">{qrModal.donoNome}</p>
-                <p className="text-[10px] text-zinc-400 mt-1 font-mono">{qrModal.id}</p>
-              </div>
-            </div>
-            
-            <div className="p-4 bg-white">
-              <button onClick={() => setQrModal(null)} className="w-full bg-zinc-100 hover:bg-zinc-200 text-zinc-600 font-black py-4 rounded-2xl uppercase tracking-widest text-xs transition">
-                Fechar
-              </button>
-            </div>
+            ))}
           </div>
-        </div>
-      )}
-
-      <BottomNav />
+        )}
+      </div>
     </div>
   );
 }
