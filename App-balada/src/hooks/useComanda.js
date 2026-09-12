@@ -70,8 +70,14 @@ export function useComanda(user) {
     /*
      * EVENTOS
      */
-    const unsubEv = onSnapshot(
+    // Criamos uma query para não puxar lixo histórico
+    const qEventos = query(
       collection(db, 'eventos'),
+      where('status', 'in', ['ativo', 'rascunho']) 
+    );
+
+    const unsubEv = onSnapshot(
+      qEventos,
       (snap) => {
         setDados((prev) => ({
           ...prev,

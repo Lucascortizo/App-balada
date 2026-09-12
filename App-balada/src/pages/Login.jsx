@@ -1,5 +1,3 @@
-// src/pages/Login.jsx
-
 import { useState, useContext, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { AuthContext } from '../contexts/AuthContext';
@@ -9,22 +7,20 @@ import { updateProfile } from 'firebase/auth';
 import { Wine, Lock, Mail, Loader2, User as UserIcon, CalendarDays, Phone, CreditCard } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { APP_NAME } from '../constants/Brand';
-import { getRedirectPath } from '../utils/roleMap'; // NOSSO MAPA AQUI!
+import { getRedirectPath } from '../utils/roleMap';
 
 const mascaraCPF = (valor) =>
   valor
     .replace(/\D/g, '')
     .replace(/(\d{3})(\d)/, '$1.$2')
     .replace(/(\d{3})(\d)/, '$1.$2')
-    .replace(/(\d{3})(\d{1,2})/, '$1-$2')
-    .replace(/(-\d{2})\d+?$/, '$1');
+    .replace(/(\d{3})(\d{1,2})/, '$1-$2')     .replace(/(-\d{2})\d+?$/, '$1');
 
 const mascaraTelefone = (valor) =>
   valor
     .replace(/\D/g, '')
     .replace(/(\d{2})(\d)/, '($1) $2')
-    .replace(/(\d{5})(\d)/, '$1-$2')
-    .replace(/(-\d{4})\d+?$/, '$1');
+    .replace(/(\d{5})(\d)/, '$1-$2')     .replace(/(-\d{4})\d+?$/, '$1');
 
 export default function Login() {
   const [isLogin, setIsLogin] = useState(true);
@@ -43,9 +39,8 @@ export default function Login() {
   const returnTo = location.state?.returnTo || null;
 
   useEffect(() => {
-    // 1 LINHA DE CÓDIGO SUBSTITUIU AQUELE IF/ELSE GIGANTE!
     if (user) navigate(returnTo || getRedirectPath(user.role), { replace: true });
-  }, [user, navigate]);
+  }, [user, navigate, returnTo]);
 
   const handleAuth = async (e) => {
     e.preventDefault();
@@ -92,30 +87,30 @@ export default function Login() {
     }
   };
 
-  const campo = 'w-full rounded-xl border border-zinc-200 bg-zinc-50 py-3 pl-11 pr-4 text-sm font-medium text-zinc-900 outline-none transition focus:border-indigo-500 focus:bg-white';
-  const rotulo = 'mb-1.5 block text-sm font-medium text-zinc-600';
+  const campo = 'w-full rounded-2xl border border-zinc-800 bg-zinc-950 py-3.5 pl-11 pr-4 text-sm font-bold text-white placeholder-zinc-600 outline-none transition focus:border-indigo-500 [color-scheme:dark]';
+  const rotulo = 'mb-1.5 block text-[10px] font-black uppercase tracking-wider text-zinc-500';
 
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center bg-[#FAFAFA] p-6 text-zinc-900">
+    <div className="flex min-h-screen flex-col items-center justify-center bg-zinc-950 p-6 text-zinc-50 font-sans">
       <div className={`w-full ${isLogin ? 'max-w-sm' : 'max-w-lg'} transition-all`}>
         <div className="mb-8 text-center">
-          <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-zinc-900">
-            <Wine className="h-7 w-7 text-white" />
+          <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-zinc-900 border border-zinc-800 shadow-xl">
+            <Wine className="h-7 w-7 text-indigo-500" />
           </div>
-          <h1 className="text-2xl font-semibold tracking-tight">{APP_NAME}</h1>
-          <p className="mt-1 text-sm text-zinc-500">
+          <h1 className="text-2xl font-black tracking-tight text-white">{APP_NAME}</h1>
+          <p className="mt-1 text-xs font-bold text-zinc-500">
             {isLogin ? 'Entre para continuar.' : 'Crie sua conta para garantir seu lugar.'}
           </p>
         </div>
 
-        <div className="rounded-3xl border border-zinc-200 bg-white p-8 shadow-sm">
+        <div className="rounded-[2.5rem] border border-zinc-800 bg-zinc-900 p-8 shadow-2xl">
           <form onSubmit={handleAuth} className={isLogin ? 'space-y-4' : 'grid grid-cols-1 gap-4 md:grid-cols-2'}>
             {!isLogin && (
               <>
                 <div className="md:col-span-2">
                   <label className={rotulo}>Nome completo</label>
                   <div className="relative">
-                    <UserIcon className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
+                    <UserIcon className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
                     <input type="text" required value={nome} onChange={(e) => setNome(e.target.value)} className={campo} placeholder="Seu nome" />
                   </div>
                 </div>
@@ -123,7 +118,7 @@ export default function Login() {
                 <div>
                   <label className={rotulo}>CPF</label>
                   <div className="relative">
-                    <CreditCard className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
+                    <CreditCard className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
                     <input type="text" required value={cpf} onChange={(e) => setCpf(mascaraCPF(e.target.value))} className={campo} placeholder="000.000.000-00" />
                   </div>
                 </div>
@@ -131,7 +126,7 @@ export default function Login() {
                 <div>
                   <label className={rotulo}>Nascimento</label>
                   <div className="relative">
-                    <CalendarDays className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
+                    <CalendarDays className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
                     <input type="date" required value={dataNascimento} onChange={(e) => setDataNascimento(e.target.value)} className={campo} />
                   </div>
                 </div>
@@ -139,7 +134,7 @@ export default function Login() {
                 <div className="md:col-span-2">
                   <label className={rotulo}>Telefone / WhatsApp</label>
                   <div className="relative">
-                    <Phone className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
+                    <Phone className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
                     <input type="tel" required value={telefone} onChange={(e) => setTelefone(mascaraTelefone(e.target.value))} className={campo} placeholder="(00) 00000-0000" />
                   </div>
                 </div>
@@ -149,7 +144,7 @@ export default function Login() {
             <div className={!isLogin ? 'md:col-span-2' : ''}>
               <label className={rotulo}>E-mail</label>
               <div className="relative">
-                <Mail className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
+                <Mail className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
                 <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} className={campo} placeholder="seu@email.com" />
               </div>
             </div>
@@ -157,7 +152,7 @@ export default function Login() {
             <div className={!isLogin ? 'md:col-span-2' : ''}>
               <label className={rotulo}>Senha</label>
               <div className="relative">
-                <Lock className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
+                <Lock className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
                 <input type="password" required value={password} onChange={(e) => setPassword(e.target.value)} className={campo} placeholder="••••••••" />
               </div>
             </div>
@@ -166,16 +161,16 @@ export default function Login() {
               <button
                 disabled={isProcessando}
                 type="submit"
-                className="flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 py-3.5 text-sm font-semibold text-white transition hover:bg-indigo-700 disabled:opacity-50"
+                className="flex w-full items-center justify-center gap-2 rounded-2xl bg-indigo-600 py-4 text-sm font-black uppercase tracking-wider text-white transition hover:bg-indigo-500 active:scale-95 disabled:opacity-50 shadow-[0_0_20px_rgba(79,70,229,0.35)]"
               >
-                {isProcessando ? <Loader2 className="h-4 w-4 animate-spin" /> : isLogin ? 'Entrar' : 'Criar conta'}
+                {isProcessando ? <Loader2 className="h-4 w-4 animate-spin" /> : isLogin ? 'Entrar no Rolê' : 'Criar Conta'}
               </button>
             </div>
           </form>
 
-          <div className="mt-6 border-t border-zinc-100 pt-5 text-center">
-            <button onClick={() => { setIsLogin(!isLogin); setPassword(''); }} className="text-sm font-medium text-zinc-500 hover:text-indigo-600">
-              {isLogin ? 'Ainda não tem conta? Criar conta' : 'Já tem conta? Entrar'}
+          <div className="mt-6 border-t border-zinc-800 pt-5 text-center">
+            <button onClick={() => { setIsLogin(!isLogin); setPassword(''); }} className="text-xs font-bold text-zinc-400 hover:text-indigo-400 transition-colors">
+              {isLogin ? 'Ainda não tem conta? Cadastre-se' : 'Já possui conta? Fazer Login'}
             </button>
           </div>
         </div>

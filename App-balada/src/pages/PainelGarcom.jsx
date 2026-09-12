@@ -81,30 +81,55 @@ export default function PainelGarcom() {
     const toastId = toast.loading('Enviando para a cozinha...');
 
     try {
-      const itensFormatados = Object.entries(itensCarrinho).map(([pId, qtd]) => {
-        const prod = produtos.find(p => p.id === pId);
-        return { 
-          produtoId: pId, 
-          nome: prod?.nome || 'Produto Avulso', 
-          precoUnitario: Number(prod?.preco) || 0, 
-          quantidade: Number(qtd) || 1
-        };
-      });
+      // ==== MUDANÇA AQUI: RUN TRANSACTION COM BAIXA DE ESTOQUE ====
+      await runTransaction(db, async (transaction) => {
+        const leiturasEstoque = [];
+        for (const [pId, qtdDesejada] of Object.entries(itensCarrinho)) {
+          const docRef = doc(db, 'cardapio', pId);
+          const docSnap = await transaction.get(docRef);
+          
+          if (!docSnap.exists()) throw new Error(`O produto não existe mais.`);
+          
+          const estoqueReal = docSnap.data().estoque;
+          if (estoqueReal < qtdDesejada) {
+             throw new Error(`Estoque esgotado para o item: \({docSnap.data().nome}. Temos apenas\){estoqueReal} unidades.`);
+          }
+          
+          leiturasEstoque.push({ ref: docRef, estoqueAtual: estoqueReal, subtracao: qtdDesejada });
+        }
 
-      const totalCalculado = itensFormatados.reduce((acc, item) => acc + (item.precoUnitario * item.quantidade), 0);
+        // Subtrai o estoque físico
+        for (const item of leiturasEstoque) {
+          transaction.update(item.ref, { estoque: item.estoqueAtual - item.subtracao });
+        }
 
-      await addDoc(collection(db, "pedidos"), {
-        eventoId: eventoSelecionado?.id || 'evento_desconhecido',
-        clienteId: mesaSelecionada?.donoId || 'cliente_avulso',
-        clienteNome: mesaSelecionada?.donoNome || mesaSelecionada?.sigla || 'Mesa VIP',
-        mesaSigla: mesaSelecionada?.sigla || 'Mesa',
-        tipoEntrega: 'mesa',
-        itens: itensFormatados,
-        total: totalCalculado || 0,
-        status: 'pendente', 
-        garcomId: user?.uid || 'id_nao_encontrado',
-        garcomNome: user?.nome || user?.email || 'Garçom',
-        data: new Date().toISOString()
+        // Formata os itens
+        const itensFormatados = Object.entries(itensCarrinho).map(([pId, qtd]) => {
+          const prod = produtos.find(p => p.id === pId);
+          return { 
+            produtoId: pId, 
+            nome: prod?.nome || 'Produto', 
+            precoUnitario: Number(prod?.preco) || 0, 
+            quantidade: Number(qtd) || 1
+          };
+        });
+
+        const totalCalculado = itensFormatados.reduce((acc, item) => acc + (item.precoUnitario * item.quantidade), 0);
+        const novoPedidoRef = doc(collection(db, 'pedidos'));
+
+        transaction.set(novoPedidoRef, {
+          eventoId: eventoSelecionado?.id || 'evento_desconhecido',
+          clienteId: mesaSelecionada?.donoId || 'cliente_avulso',
+          clienteNome: mesaSelecionada?.donoNome || mesaSelecionada?.sigla || 'Mesa VIP',
+          mesaSigla: mesaSelecionada?.sigla || 'Mesa',
+          tipoEntrega: 'mesa',
+          itens: itensFormatados,
+          total: totalCalculado || 0,
+          status: 'pendente', 
+          garcomId: user?.uid || 'id_nao_encontrado',
+          garcomNome: user?.nome || user?.email || 'Garçom',
+          data: new Date().toISOString()
+        });
       });
 
       toast.success("Pedido enviado para o bar!", { id: toastId });
@@ -112,8 +137,7 @@ export default function PainelGarcom() {
       setMesaSelecionada(null); 
       setAbaAtiva('meus_pedidos');
     } catch (e) { 
-      console.error(e);
-      toast.error("Erro ao enviar. Tente novamente.", { id: toastId }); 
+      toast.error(e.message || "Erro ao enviar. Tente novamente.", { id: toastId }); 
     } finally { 
       setIsSubmitting(false); 
     }
