@@ -4,7 +4,7 @@ import { collection, query, where, onSnapshot, doc, getDoc, runTransaction, addD
 import { db } from '../services/firebase';
 import { AuthContext } from '../contexts/AuthContext';
 import toast from 'react-hot-toast';
-import { ArrowLeft, MapPin, Clock, AlertCircle, Map as MapIcon, ChevronDown, ChevronUp, Ticket } from 'lucide-react';
+import { ArrowLeft, MapPin, Clock, AlertCircle, Map as MapIcon, ChevronDown, ChevronUp, Ticket, Crown, Store, Smartphone } from 'lucide-react';
 
 export default function Ingressos() {
   const [evento, setEvento] = useState(null);
@@ -73,7 +73,6 @@ export default function Ingressos() {
       });
 
       toast.success('Ingresso garantido com sucesso!', { id: toastId });
-      // Mantém o usuário na página para ele comprar mais se quiser
     } catch (e) {
       toast.error('Erro ao processar a compra.', { id: toastId });
     } finally {
@@ -89,11 +88,20 @@ export default function Ingressos() {
     const toastId = toast.loading('Processando reserva...');
     
     try {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      // A transação continua protegendo contra duas pessoas reservarem o mesmo espaço.
       await runTransaction(db, async (t) => {
         const ref = doc(db, 'espacos', espaco.id);
         const snap = await t.get(ref);
-        if (!snap.exists() || snap.data().status !== 'disponivel') throw new Error('indisponivel');
+
+        if (!snap.exists()) {
+          throw new Error('espaco_nao_encontrado');
+        }
+
+        const dadosAtuais = snap.data();
+        if (dadosAtuais.status !== 'disponivel') {
+          throw new Error('indisponivel');
+        }
+
         t.update(ref, {
           status: 'reservado',
           donoId: user.uid,
@@ -102,11 +110,15 @@ export default function Ingressos() {
           checkinFeito: false,
         });
       });
-      
+
       toast.success(`${espaco.sigla} reservado com sucesso!`, { id: toastId });
-      // Mantém o usuário na página
     } catch (e) {
-      toast.error('Este espaço acabou de ser reservado por outra pessoa.', { id: toastId });
+      if (e?.message === 'indisponivel') {
+        toast.error('Este espaço acabou de ser reservado por outra pessoa.', { id: toastId });
+      } else {
+        console.error('Erro ao reservar espaço:', e);
+        toast.error('Não foi possível reservar este espaço. Tente novamente.', { id: toastId });
+      }
     } finally {
       setIsSubmitting(false);
     }
@@ -119,6 +131,10 @@ export default function Ingressos() {
       </div>
     );
   }
+
+  // Lógica das Feature Flags (Garante que true é o padrão para manter compatibilidade)
+  const isVendaIngressoAtiva = evento.vendaIngressosOnline !== false; 
+  const isVendaCamaroteAtiva = evento.vendaCamarotesOnline !== false;
 
   return (
     <div className="min-h-screen bg-[#FAFAFA] pb-32 text-zinc-900">
@@ -175,11 +191,23 @@ export default function Ingressos() {
           </div>
         )}
 
-        {ingressosDoEvento.length > 0 && (
-          <div className="mb-10 animate-fade-in">
-            <h2 className="mb-5 text-xl font-black tracking-tight !text-zinc-900 flex items-center gap-2">
-              <Ticket className="w-5 h-5 text-indigo-600"/> Ingressos Disponíveis
-            </h2>
+        {/* ================= INGRESSOS PISTA ================= */}
+        <div className="mb-10 animate-fade-in">
+          <h2 className="mb-5 text-xl font-black tracking-tight !text-zinc-900 flex items-center gap-2">
+            <Ticket className="w-5 h-5 text-indigo-600"/> Ingressos Pista
+          </h2>
+
+          {!isVendaIngressoAtiva ? (
+            <div className="rounded-3xl border border-zinc-200 bg-white p-8 text-center shadow-sm">
+              <div className="w-16 h-16 bg-zinc-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <Store className="w-8 h-8 text-zinc-400" />
+              </div>
+              <h3 className="text-lg font-black !text-zinc-900 mb-2">Venda apenas na bilheteria</h3>
+              <p className="text-sm font-medium text-zinc-500 max-w-sm mx-auto">
+                Este evento não disponibiliza venda de ingressos antecipados pelo aplicativo. Os ingressos serão vendidos diretamente na portaria do evento.
+              </p>
+            </div>
+          ) : ingressosDoEvento.length > 0 ? (
             <div className="space-y-4">
               {ingressosDoEvento.map((ing) => (
                 <div key={ing.id} className="rounded-3xl border border-zinc-200 bg-white shadow-sm overflow-hidden">
@@ -230,14 +258,33 @@ export default function Ingressos() {
                 </div>
               ))}
             </div>
-          </div>
-        )}
+          ) : (
+             <div className="rounded-3xl border border-zinc-200 bg-white p-8 text-center shadow-sm">
+                <p className="text-zinc-400 font-bold">Lotes ainda não disponíveis.</p>
+             </div>
+          )}
+        </div>
 
-        {espacos.length > 0 && (
-          <div className="mb-10">
-            {Object.entries(espacosAgrupados).map(([nomeSetor, listaEspacos]) => (
+        {/* ================= RESERVA VIP ================= */}
+        <div className="mb-10">
+          <h2 className="mb-5 text-xl font-black tracking-tight !text-zinc-900 flex items-center gap-2">
+            <Crown className="w-5 h-5 text-indigo-600"/> Mapa VIP & Camarotes
+          </h2>
+
+          {!isVendaCamaroteAtiva ? (
+             <div className="rounded-3xl border border-zinc-200 bg-white p-8 text-center shadow-sm">
+              <div className="w-16 h-16 bg-zinc-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <Smartphone className="w-8 h-8 text-zinc-400" />
+              </div>
+              <h3 className="text-lg font-black !text-zinc-900 mb-2">Reservas via Promoter</h3>
+              <p className="text-sm font-medium text-zinc-500 max-w-sm mx-auto">
+                A reserva de camarotes, mesas e lounges para este evento é feita exclusivamente através dos nossos promoters oficiais.
+              </p>
+            </div>
+          ) : espacos.length > 0 ? (
+            Object.entries(espacosAgrupados).map(([nomeSetor, listaEspacos]) => (
               <div key={nomeSetor} className="mb-8">
-                <h2 className="mb-4 text-xl font-black tracking-tight !text-zinc-900">Área VIP: {nomeSetor}</h2>
+                <h3 className="mb-4 text-lg font-black text-zinc-600 tracking-tight border-b border-zinc-200 pb-2">{nomeSetor}</h3>
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                   {listaEspacos.map((espaco) => (
                     <div key={espaco.id} className="flex flex-col justify-between rounded-3xl border border-zinc-200 bg-white p-6 transition hover:border-indigo-200 shadow-sm">
@@ -261,9 +308,13 @@ export default function Ingressos() {
                   ))}
                 </div>
               </div>
-            ))}
-          </div>
-        )}
+            ))
+          ) : (
+            <div className="rounded-3xl border border-zinc-200 bg-zinc-50 p-8 text-center shadow-inner">
+               <p className="text-zinc-400 font-bold">Todos os espaços VIP já foram reservados.</p>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

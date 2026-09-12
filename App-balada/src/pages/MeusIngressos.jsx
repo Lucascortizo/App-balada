@@ -1,11 +1,12 @@
 import { useState, useEffect, useContext } from 'react';
-import { collection, query, where, onSnapshot, doc, updateDoc, getDocs } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, doc, updateDoc } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import { AuthContext } from '../contexts/AuthContext';
 import QRCode from 'react-qr-code';
 import toast from 'react-hot-toast';
 import BottomNav from '../components/BottomNav';
 import { Ticket, Send, User, Users, Plus, Trash2, CheckCircle2, Link, Star, XCircle, Clock, X, Crown } from 'lucide-react';
+import { gerarTokenConvite, urlConvite, compartilharOuCopiar } from '../utils/convites';
 
 export default function MeusIngressos() {
   const { user } = useContext(AuthContext);
@@ -15,7 +16,6 @@ export default function MeusIngressos() {
   const [reservas, setReservas] = useState([]);
   const [espacosComoConvidado, setEspacosComoConvidado] = useState([]); 
   const [ingressosRecebidos, setIngressosRecebidos] = useState([]);
-  const [espacosRecebidos, setEspacosRecebidos] = useState([]);
   
   const [abaAtiva, setAbaAtiva] = useState('ativos'); 
   
@@ -33,81 +33,165 @@ export default function MeusIngressos() {
     const unsubReservas = onSnapshot(query(collection(db, "espacos"), where("donoId", "==", user.uid)), snap => setReservas(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
     const unsubConvidados = onSnapshot(query(collection(db, "espacos"), where("convidadosIds", "array-contains", user.uid)), snap => setEspacosComoConvidado(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
     
-    const unsubIngressosIn = onSnapshot(query(collection(db, "ingressos_vendidos"), where("transferencia.paraId", "==", user.uid)), snap => setIngressosRecebidos(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
-    const unsubEspacosIn = onSnapshot(query(collection(db, "espacos"), where("transferencia.paraId", "==", user.uid)), snap => setEspacosRecebidos(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
-
-    return () => { unsubEventos(); unsubIngressos(); unsubReservas(); unsubConvidados(); unsubIngressosIn(); unsubEspacosIn(); };
+    const unsubIngressosIn = onSnapshot(
+      query(collection(db, "ingressos_vendidos"), where("transferencia.paraEmail", "==", (user.email || "").toLowerCase().trim())),
+      snap => setIngressosRecebidos(
+        snap.docs
+          .map(d => ({ id: d.id, ...d.data() }))
+          .filter(item => item.transferencia?.status === 'pendente')
+      )
+    );
+      return () => { unsubEventos(); unsubIngressos(); unsubReservas(); unsubConvidados(); unsubIngressosIn(); };
   }, [user]);
 
   const solicitarTransferencia = async () => {
-    if (!emailInput) return toast.error("Digite o e-mail.");
+    const emailDestino = emailInput.toLowerCase().trim();
+    if (!emailDestino || !emailDestino.includes('@')) return toast.error("Digite um e-mail válido.");
+
+    if (modalTransferencia.tipo !== 'ingresso') {
+      toast.error('Camarotes não podem ser transferidos.');
+      return;
+    }
+
+    const colecao = 'ingressos_vendidos';
+    const token = gerarTokenConvite();
+    const transferencia = {
+      status: 'pendente',
+      paraEmail: emailDestino,
+      token,
+      criadoEm: new Date().toISOString(),
+    };
+
     setIsProcessando(true);
-    const toastId = toast.loading('Enviando...');
+    const toastId = toast.loading('Gerando convite...');
+
     try {
-      const qUsuario = query(collection(db, "usuarios"), where("email", "==", emailInput.toLowerCase().trim()));
-      const snapUsuario = await getDocs(qUsuario);
-      if (snapUsuario.empty) {
-        toast.error("Usuário não encontrado no aplicativo.", { id: toastId });
-        setIsProcessando(false);
-        return;
-      }
-      const colecao = modalTransferencia.tipo === 'ingresso' ? 'ingressos_vendidos' : 'espacos';
-      await updateDoc(doc(db, colecao, modalTransferencia.id), {
-        transferencia: { status: 'pendente', paraId: snapUsuario.docs[0].id, paraEmail: emailInput.toLowerCase().trim() }
+      const itemRef = doc(db, colecao, modalTransferencia.id);
+      await updateDoc(itemRef, { transferencia });
+
+      const url = urlConvite('transferencia', colecao, modalTransferencia.id, token);
+      const resultado = await compartilharOuCopiar({
+        url,
+        titulo: 'Convite de transferência • Rolê',
+        texto: `Você recebeu uma transferência no Rolê. Acesse o convite para aceitar.`,
+        sucesso: 'Link de transferência copiado.',
       });
-      toast.success("Convite de transferência enviado!", { id: toastId });
+
+      if (resultado !== 'cancelado') {
+        toast.success(
+          resultado === 'compartilhado' ? 'Convite de transferência enviado.' : 'Convite de transferência pronto.',
+          { id: toastId }
+        );
+      } else {
+        toast.dismiss(toastId);
+      }
+
       setModalTransferencia({ aberto: false, id: null, tipo: '' });
       setEmailInput('');
-    } catch (e) { toast.error("Erro ao transferir.", { id: toastId }); } 
-    setIsProcessando(false);
+    } catch (e) {
+      console.error('Erro ao gerar transferência:', e);
+      toast.error("Erro ao gerar o convite de transferência.", { id: toastId });
+    } finally {
+      setIsProcessando(false);
+    }
   };
 
   const cancelarTransferencia = async (id, col) => {
-    await updateDoc(doc(db, col, id), { transferencia: null });
-    toast.success("Transferência cancelada.");
+    try {
+      await updateDoc(doc(db, col, id), { transferencia: null });
+      toast.success("Transferência cancelada.");
+    } catch (error) {
+      console.error('Erro ao cancelar transferência:', error);
+      toast.error('Não foi possível cancelar a transferência.');
+    }
   };
 
   const responderTransferencia = async (item, col, aceitar) => {
-    if (aceitar) { 
-      await updateDoc(doc(db, col, item.id), { donoId: user.uid, donoNome: user?.nome || user?.email, transferencia: null }); 
-      toast.success("Convite aceito!"); 
-    } else {
-      await updateDoc(doc(db, col, item.id), { transferencia: null });
+    if (!item?.transferencia?.token) {
+      return toast.error('Este convite não possui um token válido.');
+    }
+
+    if (aceitar) {
+      window.location.hash = `#/convite/transferencia/${encodeURIComponent(item.id)}/${encodeURIComponent(item.transferencia.token)}`;
+      return;
+    }
+
+    try {
+      await updateDoc(doc(db, col, item.id), {
+        transferencia: {
+          ...item.transferencia,
+          status: 'recusada',
+          recusadaEm: new Date().toISOString(),
+          recusadaPor: user.uid,
+        },
+      });
+      toast.success("Transferência recusada.");
+    } catch (error) {
+      console.error('Erro ao recusar transferência:', error);
+      toast.error('Não foi possível recusar a transferência.');
+    }
+  };
+
+  const gerarLinkConvite = async (espaco) => {
+    const token = gerarTokenConvite();
+    const emailDestino = emailInput.toLowerCase().trim();
+    const vipInvite = {
+      token,
+      status: 'pendente',
+      paraEmail: emailDestino || null,
+      criadoEm: new Date().toISOString(),
+      criadoPor: user.uid,
+    };
+
+    setIsProcessando(true);
+    const toastId = toast.loading('Gerando convite VIP...');
+
+    try {
+      await updateDoc(doc(db, 'espacos', espaco.id), { vipInvite });
+
+      const url = urlConvite('vip', espaco.id, token);
+      const resultado = await compartilharOuCopiar({
+        url,
+        titulo: `Convite VIP • ${espaco.sigla}`,
+        texto: `Convite para a lista VIP do ${espaco.sigla} no Rolê.`,
+        sucesso: 'Link VIP copiado.',
+      });
+
+      if (resultado !== 'cancelado') {
+        toast.success(
+          resultado === 'compartilhado' ? 'Convite VIP enviado.' : 'Convite VIP pronto.',
+          { id: toastId }
+        );
+      } else {
+        toast.dismiss(toastId);
+      }
+
+      setModalConvidados({ aberto: true, espaco: { ...espaco, vipInvite } });
+      setEmailInput('');
+    } catch (error) {
+      console.error('Erro ao gerar convite VIP:', error);
+      toast.error('Não foi possível gerar o convite VIP.', { id: toastId });
+    } finally {
+      setIsProcessando(false);
     }
   };
 
   const adicionarConvidado = async (espaco) => {
-    if (!emailInput) return toast.error("Digite o e-mail.");
-    setIsProcessando(true);
-    try {
-      const qUsuario = query(collection(db, "usuarios"), where("email", "==", emailInput.toLowerCase().trim()));
-      const snapUsuario = await getDocs(qUsuario);
-      if (snapUsuario.empty) { 
-        toast.error("O amigo precisa criar uma conta no app primeiro."); 
-        setIsProcessando(false);
-        return; 
-      }
-      const novoConvidado = { uid: snapUsuario.docs[0].id, nome: snapUsuario.docs[0].data().nome || emailInput, email: emailInput };
-      const novaLista = [...(espaco.convidados || []), novoConvidado];
-      const novaListaIds = novaLista.map(c => c.uid);
-      await updateDoc(doc(db, "espacos", espaco.id), { convidados: novaLista, convidadosIds: novaListaIds });
-      setModalConvidados({ aberto: true, espaco: { ...espaco, convidados: novaLista, convidadosIds: novaListaIds } });
-      setEmailInput('');
-      toast.success("Amigo adicionado!");
-    } catch (e) { toast.error("Erro ao adicionar amigo."); } 
-    setIsProcessando(false);
+    if (isProcessando) return;
+    await gerarLinkConvite(espaco);
   };
 
   const removerConvidado = async (espaco, idx) => {
     const novaLista = espaco.convidados?.filter((_, i) => i !== idx) || [];
     const novaListaIds = novaLista.map(c => c.uid);
-    await updateDoc(doc(db, "espacos", espaco.id), { convidados: novaLista, convidadosIds: novaListaIds });
-    setModalConvidados({ aberto: true, espaco: { ...espaco, convidados: novaLista, convidadosIds: novaListaIds } });
-  };
-
-  const gerarLinkConvite = (espacoId) => { 
-    navigator.clipboard.writeText(`https://app.neonclub.com/vip-invite/${espacoId}`); 
-    toast.success("Link copiado para o WhatsApp!"); 
+    try {
+      await updateDoc(doc(db, "espacos", espaco.id), { convidados: novaLista, convidadosIds: novaListaIds });
+      setModalConvidados({ aberto: true, espaco: { ...espaco, convidados: novaLista, convidadosIds: novaListaIds } });
+      toast.success('Convidado removido.');
+    } catch (error) {
+      console.error('Erro ao remover convidado:', error);
+      toast.error('Não foi possível remover o convidado.');
+    }
   };
 
   // Coleta IDs únicos em segurança
@@ -163,7 +247,7 @@ export default function MeusIngressos() {
           </button>
         </div>
 
-        {abaAtiva === 'ativos' && (ingressosRecebidos.length > 0 || espacosRecebidos.length > 0) && (
+        {abaAtiva === 'ativos' && ingressosRecebidos.length > 0 && (
           <div className="bg-indigo-600 text-white rounded-[2rem] p-6 shadow-xl mb-8 animate-fade-in">
             <h3 className="font-black text-xl mb-4 flex items-center gap-2"><Send className="w-5 h-5"/> Convites Recebidos</h3>
             <div className="space-y-3">
@@ -176,15 +260,7 @@ export default function MeusIngressos() {
                   </div>
                 </div>
               ))}
-              {espacosRecebidos.map(r => (
-                <div key={r.id} className="bg-white/10 p-4 rounded-2xl border border-indigo-400/30">
-                  <p className="font-bold text-sm mb-3 text-indigo-100">Titular VIP (<b className="text-white">{r.sigla}</b>) de <br/><b className="text-white">{r.donoNome}</b></p>
-                  <div className="flex gap-2">
-                    <button onClick={() => responderTransferencia(r, 'espacos', true)} className="flex-[2] bg-white text-indigo-600 font-black py-2.5 rounded-xl shadow-sm hover:bg-indigo-50 transition">Aceitar</button>
-                    <button onClick={() => responderTransferencia(r, 'espacos', false)} className="flex-[1] border border-indigo-400 font-black py-2.5 rounded-xl hover:bg-indigo-700 transition">Recusar</button>
-                  </div>
-                </div>
-              ))}
+
             </div>
           </div>
         )}
@@ -252,20 +328,13 @@ export default function MeusIngressos() {
                             <p className="font-black !text-zinc-900 flex items-center gap-1.5"><Crown className="w-3.5 h-3.5 text-indigo-500"/> {r.sigla}</p>
                             <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mt-1">Titular do Camarote</p>
                           </div>
-                          <button onClick={() => setTicketModal({ tipo: 'espaco', id: r.id, status: jaEntrou ? 'usado' : 'valido', nome: festa?.nome })} disabled={r.transferencia?.status === 'pendente' || isHistorico} className={`px-4 py-2 rounded-xl text-xs font-bold transition-all ${jaEntrou || isHistorico ? 'bg-zinc-100 text-zinc-400' : 'bg-indigo-50 text-indigo-600 hover:bg-indigo-100'}`}>
+                          <button onClick={() => setTicketModal({ tipo: 'espaco', id: r.id, status: jaEntrou ? 'usado' : 'valido', nome: festa?.nome })} disabled={isHistorico} className={`px-4 py-2 rounded-xl text-xs font-bold transition-all ${jaEntrou || isHistorico ? 'bg-zinc-100 text-zinc-400' : 'bg-indigo-50 text-indigo-600 hover:bg-indigo-100'}`}>
                             {jaEntrou ? 'Na Casa' : 'Mostrar QR'}
                           </button>
                         </div>
-                        {!isHistorico && !jaEntrou && !r.transferencia && (
-                          <div className="flex gap-4 mt-2">
+                        {!isHistorico && !jaEntrou && (
+                          <div className="mt-2">
                             <button onClick={() => setModalConvidados({ aberto: true, espaco: r })} className="text-[10px] uppercase font-bold text-indigo-600 flex items-center gap-1 bg-indigo-50 px-2 py-1 rounded-md hover:bg-indigo-100 transition"><Users className="w-3 h-3" /> Gerenciar Lista VIP</button>
-                            <button onClick={() => setModalTransferencia({ aberto: true, id: r.id, tipo: 'espaco' })} className="text-[10px] uppercase font-bold text-zinc-400 hover:text-zinc-600 flex items-center gap-1 transition"><Send className="w-3 h-3" /> Transferir</button>
-                          </div>
-                        )}
-                        {r.transferencia?.status === 'pendente' && (
-                          <div className="flex justify-between items-center mt-2 bg-amber-50 border border-amber-100 p-2 rounded-lg">
-                            <span className="text-[10px] font-bold text-amber-700 flex items-center gap-1"><Clock className="w-3 h-3"/> Transferindo para: {r.transferencia.paraEmail}</span>
-                            <button onClick={() => cancelarTransferencia(r.id, 'espacos')} className="text-[10px] font-black uppercase text-red-500 hover:underline">Cancelar</button>
                           </div>
                         )}
                       </div>
@@ -300,10 +369,10 @@ export default function MeusIngressos() {
               <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Capacidade: {modalConvidados.espaco.capacidade} Pessoas</p>
             </div>
             <div className="p-6 bg-zinc-50 border-b border-zinc-200 space-y-3">
-              <button onClick={() => gerarLinkConvite(modalConvidados.espaco.id)} className="w-full bg-white border border-zinc-200 text-zinc-700 py-3.5 rounded-2xl flex items-center justify-center gap-2 text-sm font-black shadow-sm active:scale-95 transition"><Link className="w-4 h-4" /> Link de Convite (WhatsApp)</button>
-              <div className="flex items-center gap-4 my-2"><div className="h-px bg-zinc-200 flex-1"></div><span className="text-[10px] font-black uppercase text-zinc-400 tracking-widest">OU ADCIONE ABAIXO</span><div className="h-px bg-zinc-200 flex-1"></div></div>
+              <button onClick={() => gerarLinkConvite(modalConvidados.espaco)} className="w-full bg-white border border-zinc-200 text-zinc-700 py-3.5 rounded-2xl flex items-center justify-center gap-2 text-sm font-black shadow-sm active:scale-95 transition"><Link className="w-4 h-4" /> Compartilhar convite VIP</button>
+              <div className="flex items-center gap-4 my-2"><div className="h-px bg-zinc-200 flex-1"></div><span className="text-[10px] font-black uppercase text-zinc-400 tracking-widest">OU ENVIE PARA UM E-MAIL</span><div className="h-px bg-zinc-200 flex-1"></div></div>
               <div className="flex gap-2">
-                <input type="email" value={emailInput} onChange={(e) => setEmailInput(e.target.value)} placeholder="E-mail do amigo cadastrado..." className="flex-1 bg-white border border-zinc-200 rounded-xl px-4 py-3 text-sm font-bold outline-none focus:border-indigo-500 transition"/>
+                <input type="email" value={emailInput} onChange={(e) => setEmailInput(e.target.value)} placeholder="E-mail do amigo (opcional)..." className="flex-1 bg-white border border-zinc-200 rounded-xl px-4 py-3 text-sm font-bold outline-none focus:border-indigo-500 transition"/>
                 <button onClick={() => adicionarConvidado(modalConvidados.espaco)} disabled={isProcessando} className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 rounded-xl font-bold flex items-center justify-center transition disabled:opacity-50"><Plus className="w-5 h-5" /></button>
               </div>
             </div>

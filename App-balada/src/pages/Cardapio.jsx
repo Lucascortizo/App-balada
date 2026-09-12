@@ -1,16 +1,20 @@
-import { useState, useEffect, useContext } from 'react';
+import { useState, useEffect, useContext, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { collection, onSnapshot, query, where, doc, runTransaction, getDocs } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import { AuthContext } from '../contexts/AuthContext';
+import { useComanda } from '../hooks/useComanda';
 import toast from 'react-hot-toast';
-import { ArrowLeft, AlertTriangle, Wine, LogIn, Minus, Plus, ShieldAlert } from 'lucide-react';
+import { ArrowLeft, AlertTriangle, Wine, Minus, Plus, ShieldAlert } from 'lucide-react';
 
 export default function Cardapio() {
   const { user } = useContext(AuthContext);
   const navigate = useNavigate();
   const location = useLocation();
-  const eventoId = location.state?.eventoId;
+  const eventoIdInformado = location.state?.eventoId;
+  const { comandasProcessadas = [], carregando: carregandoComanda } = useComanda(user);
+  const comandaAtiva = comandasProcessadas.find((c) => c.isNoEvento && !c.isHistorico);
+  const eventoId = eventoIdInformado || comandaAtiva?.eventoId;
 
   const [produtos, setProdutos] = useState([]);
   const [carrinho, setCarrinho] = useState({});
@@ -18,15 +22,18 @@ export default function Cardapio() {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const [categoriaAtiva, setCategoriaAtiva] = useState('Todos');
-  const [meusEspacos, setMeusEspacos] = useState([]);
   const [destinoSelecionado, setDestinoSelecionado] = useState('');
+
+  // 1. ESTADO ÚNICO PARA TODOS OS ESPAÇOS DO EVENTO (Evita Race Condition e Duplicidade)
+  const [todosEspacosEvento, setTodosEspacosEvento] = useState([]);
 
   // Estados da Trava de Entrada (Check-in obrigatório)
   const [verificandoAcesso, setVerificandoAcesso] = useState(true);
   const [temAcesso, setTemAcesso] = useState(false);
 
   useEffect(() => {
-    if (!eventoId) return navigate('/home');
+    if (!eventoId && !carregandoComanda) return navigate('/home');
+    if (carregandoComanda || !eventoId) return;
 
     const validarAcessoNaPortaria = async () => {
       if (!user) {
@@ -36,7 +43,12 @@ export default function Cardapio() {
       }
 
       try {
-        // 1. Verifica se tem ingresso usado (check-in feito na portaria)
+        if (!comandaAtiva || comandaAtiva.eventoId !== eventoId) {
+          setTemAcesso(false);
+          setVerificandoAcesso(false);
+          return;
+        }
+
         const qIngressos = query(
           collection(db, 'ingressos_vendidos'),
           where('eventoId', '==', eventoId),
@@ -45,7 +57,6 @@ export default function Cardapio() {
         );
         const snapIngressos = await getDocs(qIngressos);
 
-        // 2. Verifica se tem camarote/mesa com checkin ou reserva ativa
         const qEspacosDono = query(
           collection(db, 'espacos'),
           where('eventoId', '==', eventoId),
@@ -73,23 +84,30 @@ export default function Cardapio() {
       setProdutos(snap.docs.map((d) => ({ id: d.id, ...d.data() })))
     );
 
-    let unsubDono = () => {};
-    let unsubConv = () => {};
+    let unsubEspacos = () => {};
 
     if (user) {
-      const qDono = query(collection(db, 'espacos'), where('eventoId', '==', eventoId), where('donoId', '==', user.uid));
-      unsubDono = onSnapshot(qDono, (snap) => {
-        setMeusEspacos((prev) => [...prev.filter((p) => p.donoId !== user.uid), ...snap.docs.map((d) => ({ id: d.id, ...d.data() }))]);
-      });
-
-      const qConv = query(collection(db, 'espacos'), where('eventoId', '==', eventoId), where('convidadosIds', 'array-contains', user.uid));
-      unsubConv = onSnapshot(qConv, (snap) => {
-        setMeusEspacos((prev) => [...prev.filter((p) => !p.convidadosIds?.includes(user.uid)), ...snap.docs.map((d) => ({ id: d.id, ...d.data() }))]);
+      // 2. UM ÚNICO OLHEIRO: Busca apenas espaços ativos no evento atual
+      const qEspacos = query(collection(db, 'espacos'), where('eventoId', '==', eventoId), where('status', '==', 'reservado'));
+      unsubEspacos = onSnapshot(qEspacos, (snap) => {
+        setTodosEspacosEvento(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
       });
     }
 
-    return () => { unsubCardapio(); unsubDono(); unsubConv(); };
-  }, [eventoId, navigate, user]);
+    return () => { unsubCardapio(); unsubEspacos(); };
+  }, [eventoId, navigate, user, comandaAtiva, carregandoComanda]);
+
+  // 3. USEMEMO: Filtra de forma pura os espaços no qual o usuário está inserido
+  const meusEspacos = useMemo(() => {
+    if (!user) return [];
+    
+    // O usuário precisa ser o Dono OU estar na lista de convidados (array-contains)
+    return todosEspacosEvento.filter(espaco => {
+      const isDono = espaco.donoId === user.uid;
+      const isConvidado = espaco.convidadosIds && espaco.convidadosIds.includes(user.uid);
+      return isDono || isConvidado;
+    });
+  }, [todosEspacosEvento, user]);
 
   const alterarQtd = (produtoId, delta) => {
     const atual = carrinho[produtoId] || 0;
@@ -203,7 +221,6 @@ export default function Cardapio() {
     );
   }
 
-  // TELA DE BLOQUEIO: Se o usuário não fez check-in na portaria
   if (!temAcesso) {
     return (
       <div className="min-h-screen bg-[#FAFAFA] flex flex-col justify-between p-6 text-zinc-900">
@@ -221,7 +238,7 @@ export default function Cardapio() {
           <p className="text-sm font-medium text-zinc-500 leading-relaxed mb-8">
             {!user 
               ? 'Você precisa estar logado e ter feito o check-in na portaria do evento para acessar o cardápio.'
-              : 'O cardápio digital só é liberado após a leitura do seu QR Code de entrada (check-in) na portaria do evento.'}
+              : 'O cardápio digital só é liberado enquanto você estiver dentro de um evento com entrada validada.'}
           </p>
           {!user ? (
             <button onClick={() => navigate('/login', { state: { returnTo: '/cardapio', eventoId } })} className="w-full rounded-2xl bg-indigo-600 py-4 font-black text-white shadow-md transition hover:bg-indigo-700">

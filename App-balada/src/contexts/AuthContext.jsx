@@ -1,7 +1,7 @@
 import { createContext, useState, useEffect } from 'react';
+import { onAuthStateChanged, signOut, signInWithEmailAndPassword } from 'firebase/auth';
+import { doc, getDoc } from 'firebase/firestore';
 import { auth, db } from '../services/firebase';
-import { onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
-import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
 
 export const AuthContext = createContext();
 
@@ -10,50 +10,65 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    let unsubDoc = null;
-
+    // Escuta o login/logout do Firebase Auth
     const unsubscribeAuth = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
-        const docRef = doc(db, 'usuarios', firebaseUser.uid);
-        
-        // Verifica se é a primeira vez. Se for, cria como cliente.
-        const docSnap = await getDoc(docRef);
-        if (!docSnap.exists()) {
-          await setDoc(docRef, { 
-            nome: firebaseUser.displayName || '', 
-            email: firebaseUser.email, 
-            role: 'cliente' 
-          });
-        }
+        try {
+          // Busca os dados de exibição e cargo no banco (Plano Gratuito)
+          const docRef = doc(db, 'usuarios', firebaseUser.uid);
+          const docSnap = await getDoc(docRef);
+          const userData = docSnap.exists() ? docSnap.data() : {};
 
-        // MÁGICA: Fica "escutando" o banco em tempo real. 
-        // Se o Admin mudar o cargo lá no painel, o celular do funcionário atualiza na mesma hora!
-        unsubDoc = onSnapshot(docRef, (docSnapshot) => {
-          if (docSnapshot.exists()) {
-            setUser({ uid: firebaseUser.uid, ...firebaseUser, ...docSnapshot.data() });
-          }
+          // =========================================================
+          // A CHAVE MESTRA: COLOQUE SEU EMAIL AQUI
+          const MEU_EMAIL_DONO = 'lucasscortizo@gmail.com';
+          // =========================================================
+
+          const isDono = firebaseUser.email.toLowerCase() === MEU_EMAIL_DONO.toLowerCase();
+
+          // Monta o usuário
+          setUser({
+            uid: firebaseUser.uid,
+            email: firebaseUser.email,
+            nome: userData.nome || firebaseUser.displayName || '',
+            // Se o e-mail for o seu, força 'admin'. Se não for, lê do banco.
+            role: isDono ? 'admin' : (userData.role || 'cliente'),
+          });
+        } catch (error) {
+          console.error("Erro ao configurar usuário logado:", error);
+          setUser(null);
+        } finally {
           setLoading(false);
-        });
-        
+        }
       } else {
         setUser(null);
         setLoading(false);
-        if (unsubDoc) unsubDoc(); // Para de escutar se deslogar
       }
     });
-    
-    return () => {
-      unsubscribeAuth();
-      if (unsubDoc) unsubDoc();
-    };
+
+    return () => unsubscribeAuth();
   }, []);
 
-  const login = (email, password) => signInWithEmailAndPassword(auth, email, password);
-  const register = (email, password) => createUserWithEmailAndPassword(auth, email, password);
-  const logout = () => signOut(auth);
+  // ==========================================
+  // FUNÇÃO DE LOGIN
+  // ==========================================
+  const login = async (email, password) => {
+    return await signInWithEmailAndPassword(auth, email, password);
+  };
+
+  // ==========================================
+  // FUNÇÃO DE LOGOUT
+  // ==========================================
+  const logout = async () => {
+    try {
+      await signOut(auth);
+    } catch (error) {
+      console.error("Erro ao sair:", error);
+    }
+  };
 
   return (
-    <AuthContext.Provider value={{ user, login, register, logout, loading }}>
+    <AuthContext.Provider value={{ user, loading, login, logout }}>
       {!loading && children}
     </AuthContext.Provider>
   );

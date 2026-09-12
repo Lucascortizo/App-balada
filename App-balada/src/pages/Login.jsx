@@ -1,5 +1,7 @@
+// src/pages/Login.jsx
+
 import { useState, useContext, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { AuthContext } from '../contexts/AuthContext';
 import { db } from '../services/firebase';
 import { doc, setDoc } from 'firebase/firestore';
@@ -7,6 +9,7 @@ import { updateProfile } from 'firebase/auth';
 import { Wine, Lock, Mail, Loader2, User as UserIcon, CalendarDays, Phone, CreditCard } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { APP_NAME } from '../constants/Brand';
+import { getRedirectPath } from '../utils/roleMap'; // NOSSO MAPA AQUI!
 
 const mascaraCPF = (valor) =>
   valor
@@ -36,20 +39,13 @@ export default function Login() {
 
   const { login, register, user } = useContext(AuthContext);
   const navigate = useNavigate();
+  const location = useLocation();
+  const returnTo = location.state?.returnTo || null;
 
   useEffect(() => {
-    if (user) direcionarPorCargo(user.role);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user]);
-
-  const direcionarPorCargo = (role) => {
-    if (role === 'admin') navigate('/admin', { replace: true });
-    else if (role === 'garcom') navigate('/garcom', { replace: true });
-    else if (role === 'barman') navigate('/bar', { replace: true });
-    else if (role === 'seguranca') navigate('/catraca', { replace: true });
-    else if (role === 'caixa') navigate('/caixa', { replace: true });
-    else navigate('/home', { replace: true });
-  };
+    // 1 LINHA DE CÓDIGO SUBSTITUIU AQUELE IF/ELSE GIGANTE!
+    if (user) navigate(returnTo || getRedirectPath(user.role), { replace: true });
+  }, [user, navigate]);
 
   const handleAuth = async (e) => {
     e.preventDefault();
